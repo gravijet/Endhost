@@ -1,0 +1,71 @@
+name: EndhostLobby
+version: 1.0.0
+main: de.endhost.lobby.EndhostLobby
+api-version: '1.21'
+author: Endhost
+description: Endhost lobby — hub world, ranks, tablist, scoreboard, selector, cosmetics, spawn and admin tools.
+load: POSTWORLD
+commands:
+  setspawn:
+    description: Set the lobby spawn to where you stand.
+  spawn:
+    description: Teleport to the lobby spawn.
+    aliases: [hub, lobby, l]
+  servers:
+    description: Open the server selector.
+    aliases: [menu, selector]
+  players:
+    description: Toggle whether you can see other players.
+    aliases: [ph, playervisibility]
+  rank:
+    description: Show a player's rank.
+    usage: /rank [player]
+  start:
+    description: Start one of the network's servers from the lobby.
+    usage: /start <server>
+  gm:
+    description: Change game mode (admin).
+    usage: /gm <survival|creative|adventure|spectator> [player]
+  gmc:
+    description: Creative mode (admin).
+  gms:
+    description: Survival mode (admin).
+  gma:
+    description: Adventure mode (admin).
+  gmsp:
+    description: Spectator mode (admin).
+  fly:
+    description: Toggle flight (admin).
+    usage: /fly [player]
+  speed:
+    description: Set fly/walk speed 1-10 (admin).
+    usage: /speed <1-10>
+  tp:
+    description: Teleport to a player (admin).
+    usage: /tp <player>
+  tphere:
+    description: Teleport a player to you (admin).
+    usage: /tphere <player>
+  broadcast:
+    description: Broadcast a message to the lobby (admin).
+    aliases: [bc]
+    usage: /broadcast <message>
+  heal:
+    description: Heal a player (admin).
+    usage: /heal [player]
+  feed:
+    description: Feed a player (admin).
+    usage: /feed [player]
+  day:
+    description: Set the lobby time to day (admin).
+  night:
+    description: Set the lobby time to night (admin).
+  vanish:
+    description: Hide yourself from non-staff players (admin).
+    aliases: [v]
+  clearchat:
+    description: Clear the chat for everyone (admin).
+    aliases: [cc]
+  lobbyreload:
+    description: Reload lobby config, ranks and network list (admin).
+    aliases: [lr]

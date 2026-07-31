@@ -1,0 +1,28 @@
+# Endhost backend — the API and console behind the panel.
+# Runs as root so it can reach the Docker socket (docker access is root-equivalent
+# regardless), bound to localhost; only nginx talks to it. It provisions Paper
+# servers as `endhost-*` containers with fixed RAM/CPU caps and a global ceiling.
+#
+# Install:
+#   sudo cp deploy/endhost.service /etc/systemd/system/endhost.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now endhost
+
+[Unit]
+Description=Endhost — Minecraft hosting backend
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/gravijet/Endhost
+ExecStart=/usr/bin/node dist/server/index.cjs
+Environment=NODE_ENV=production
+Environment=PORT=8791
+Environment=HOST=127.0.0.1
+Environment=ENDHOST_JOIN_HOST=example.invalid
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

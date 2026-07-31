@@ -1,0 +1,13 @@
+# EndhostLobby — written by the panel on install. Ranks, prefixes and permissions live in
+# ranks.json (managed from the dashboard's Ranks page) and spawn.yml holds the spawn (/setspawn).
+# This file carries the join address shown on the board, the rotating announcement lines, and a
+# fallback admins list so the operator is never locked out before the first ranks.json is written.
+# Editing it by hand and running /lobbyreload applies the change.
+admins:
+  - gravijet
+address: example.invalid
+announcements:
+  - '&7Right-click the &bcompass &7to hop between servers.'
+  - '&7Fall onto a &aslime pad &7for a boost — or double-jump to fly up.'
+  - '&7Type &e/hub &7from anywhere to come back to the lobby.'
+  - '&7Toggle other players with the dye in your hotbar.'

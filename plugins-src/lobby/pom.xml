@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>de.endhost</groupId>
+    <artifactId>endhost-plugins</artifactId>
+    <version>1.0.0</version>
+  </parent>
+
+  <artifactId>endhost-lobby</artifactId>
+
+  <dependencies>
+    <!-- Paper 1.21.11 API. Gson and Adventure come with it at runtime and on the compile
+         classpath (paper-api depends on both), so nothing is shaded into our jar. -->
+    <dependency>
+      <groupId>io.papermc.paper</groupId>
+      <artifactId>paper-api</artifactId>
+      <version>1.21.11-R0.1-SNAPSHOT</version>
+      <scope>provided</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>EndhostLobby</finalName>
+  </build>
+</project>

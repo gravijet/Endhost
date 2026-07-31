@@ -1,0 +1,9 @@
+{
+  "id": "endhostproxy",
+  "name": "EndhostProxy",
+  "version": "1.0.0",
+  "description": "Endhost network proxy: lobby commands, MOTD and maintenance.",
+  "authors": ["Endhost"],
+  "dependencies": [],
+  "main": "de.endhost.proxy.EndhostProxy"
+}

@@ -1,0 +1,38 @@
+{
+  "name": "endhost",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Endhost — Minecraft server hosting, built in Minecraft's own GUI grammar. Real panel, no placeholders.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build:web": "node scripts/build-web.mjs",
+    "build:server": "node scripts/build-server.mjs",
+    "build:plugins": "node scripts/build-plugins.mjs",
+    "build": "npm run build:web && npm run build:server",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/server/index.cjs",
+    "dev": "npm run build && npm run start"
+  },
+  "dependencies": {
+    "@types/ssh2": "^1.15.5",
+    "cookie-parser": "^1.4.7",
+    "dockerode": "^4.0.2",
+    "express": "^4.21.2",
+    "ssh2": "^1.17.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@sparticuz/chromium": "^123.0.1",
+    "@types/cookie-parser": "^1.4.8",
+    "@types/dockerode": "^3.3.31",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "esbuild": "^0.24.0",
+    "puppeteer-core": "^23.11.1",
+    "typescript": "^5.7.2"
+  }
+}

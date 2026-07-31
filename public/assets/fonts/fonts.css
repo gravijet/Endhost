@@ -1,0 +1,16 @@
+/* Monocraft — a pixel typeface modelled on Minecraft's, by Idrees Hassan.
+   SIL Open Font License 1.1. See monocraft-LICENSE.txt. */
+@font-face {
+  font-family: 'Monocraft';
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url('../fonts/monocraft-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Monocraft';
+  font-style: normal;
+  font-weight: 700;
+  font-display: block;
+  src: url('../fonts/monocraft-700.woff2') format('woff2');
+}

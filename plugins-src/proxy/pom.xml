@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>de.endhost</groupId>
+    <artifactId>endhost-plugins</artifactId>
+    <version>1.0.0</version>
+  </parent>
+
+  <artifactId>endhost-proxy</artifactId>
+
+  <dependencies>
+    <!-- Compiled against the stable 4.0.0 API; runs on the proxy's 4.1.x build (the
+         4.0.0 API surface stays present within the v4 line). The annotation processor
+         bundled here generates velocity-plugin.json from @Plugin at compile time. -->
+    <dependency>
+      <groupId>com.velocitypowered</groupId>
+      <artifactId>velocity-api</artifactId>
+      <version>4.0.0</version>
+      <scope>provided</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>EndhostProxy</finalName>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <!-- Velocity's @Plugin annotation processor is unreliable on JDK 23+ (classpath
+               processors no longer run by default). We ship velocity-plugin.json as a
+               plain resource instead — identical output — so disable processing entirely. -->
+          <proc>none</proc>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>
