@@ -126,6 +126,14 @@ export const CREDITS = {
 // The account that may grant credits and see every user. Marked admin at boot.
 export const ADMIN_EMAIL = (process.env.ENDHOST_ADMIN_EMAIL || 'user@example.invalid').toLowerCase();
 
+// Linking a Minecraft account to a panel account. The panel mints a short one-time code the
+// player types in-game (/link CODE); the proxy relays it through the control bridge and the
+// panel records the UUID. Codes are single-use and expire, so a leaked code is harmless.
+export const LINK = {
+  ttlMs: 10 * 60 * 1000, // a code is good for ten minutes
+  codeLen: 6,            // e.g. "7KQ2F9" — unambiguous alphabet (no 0/O/1/I)
+};
+
 // Per-server subdomains. One TCP listener reads the hostname a player typed (it
 // lives in the Minecraft handshake packet) and forwards the connection to that
 // server's container on the loopback — so only ONE port faces the internet and

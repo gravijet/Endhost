@@ -25,14 +25,20 @@ final class NetworkModel {
         final String key;       // the Velocity server name used to connect
         final String name;      // display name
         final String material;  // Bukkit material for the icon
+        final String status;    // online | starting | restarting | offline
         final boolean online;
+        final int players;
+        final int maxPlayers;
         final boolean startable;
 
-        Entry(String key, String name, String material, boolean online, boolean startable) {
+        Entry(String key, String name, String material, String status, boolean online, int players, int maxPlayers, boolean startable) {
             this.key = key;
             this.name = name;
             this.material = material;
+            this.status = status;
             this.online = online;
+            this.players = players;
+            this.maxPlayers = maxPlayers;
             this.startable = startable;
         }
     }
@@ -65,11 +71,17 @@ final class NetworkModel {
             JsonArray arr = root.has("servers") ? root.getAsJsonArray("servers") : new JsonArray();
             for (JsonElement el : arr) {
                 JsonObject o = el.getAsJsonObject();
+                boolean online = o.has("online") && o.get("online").getAsBoolean();
+                String status = o.has("status") && !o.get("status").isJsonNull()
+                        ? o.get("status").getAsString() : (online ? "online" : "offline");
                 out.add(new Entry(
                         str(o, "key"),
                         str(o, "name"),
                         o.has("material") ? o.get("material").getAsString() : "GRASS_BLOCK",
-                        o.has("online") && o.get("online").getAsBoolean(),
+                        status,
+                        online,
+                        o.has("players") ? o.get("players").getAsInt() : 0,
+                        o.has("maxPlayers") ? o.get("maxPlayers").getAsInt() : 20,
                         o.has("startable") && o.get("startable").getAsBoolean()));
             }
         } catch (Exception e) {

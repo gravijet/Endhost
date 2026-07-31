@@ -906,3 +906,15 @@ select.input { cursor: url('../img/crosshair.png') 16 16, crosshair; }
   .wl-rule { gap: 10px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* ---- docs command reference ---- */
+.doc-list { display: flex; flex-direction: column; gap: 2px; margin-top: 10px; }
+.doc-row { display: grid; grid-template-columns: minmax(180px, 300px) 1fr; gap: 14px; align-items: baseline; padding: 8px 10px; border-radius: 8px; }
+.doc-row:nth-child(odd) { background: rgba(255, 255, 255, 0.03); }
+.doc-cmd { font-family: var(--mono, monospace); font-size: 13px; color: var(--accent, #7ad7ff); white-space: normal; }
+.doc-desc { font-size: 13px; }
+@media (max-width: 620px) { .doc-row { grid-template-columns: 1fr; gap: 2px; } }
+
+/* ---- link a Minecraft account ---- */
+.link-steps { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+.link-code { font-family: var(--mono, monospace); font-size: 15px; letter-spacing: 0.5px; padding: 6px 12px; border-radius: 8px; background: rgba(122, 215, 255, 0.12); border: 1px solid rgba(122, 215, 255, 0.25); color: var(--accent, #7ad7ff); }

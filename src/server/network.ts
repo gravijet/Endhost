@@ -10,15 +10,29 @@ import { PassThrough, type Duplex } from 'node:stream';
 import { mkdirSync, writeFileSync, readdirSync, rmSync, copyFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { NETWORK, NETWORK_ICONS, DEFAULT_ICONS, PLUGINS_DIST, PROXY_JAR, PROXY_MOTD, LOBBY_ADMIN, DATA_DIR, DEFAULT_RANKS, DEFAULT_RANK_ID, iconMaterial } from './config.js';
+import { NETWORK, NETWORK_ICONS, DEFAULT_ICONS, PLUGINS_DIST, PROXY_JAR, PROXY_MOTD, LOBBY_ADMIN, DATA_DIR, DEFAULT_RANKS, DEFAULT_RANK_ID, FREE_PLAN, iconMaterial } from './config.js';
 import { store, type Server, type Network } from './store.js';
-import { containerName, dataDir, chownTree } from './docker.js';
+import { containerName, dataDir, chownTree, state as serverState, players as serverPlayers } from './docker.js';
 
 const docker = new Docker(); // /var/run/docker.sock
 
 export const PROXY_NAME = 'endhost-proxy';
 const PROXY_DIR = join(DATA_DIR, 'proxy'); // bind-mounted at /server; holds velocity.toml + secret + the jar
 const INTERNAL_PORT = 25577;               // what Velocity binds inside the container
+
+// The proxy's /server bind mount, exposed so the panel can manage its files the same way it
+// manages a server's volume. Root-owned like the rest of the proxy config; the file layer
+// chowns anything it writes back to the volume owner.
+export function proxyRoot(): string {
+  return PROXY_DIR;
+}
+
+// Where EndhostProxy drops control-bridge requests (link a Minecraft account, an owner's
+// /start·/stop·/restart, /maintenance) and where the panel writes the replies. Files, not a
+// socket — the same trust boundary the panel already has over this volume.
+export function proxyControlDir(): string {
+  return join(PROXY_DIR, 'plugins', 'endhostproxy', 'control');
+}
 
 function proxy() {
   return docker.getContainer(PROXY_NAME);
@@ -316,6 +330,21 @@ export function writeProxyRanks(net: Network): void {
   chownTree(dir);
 }
 
+// Does the given Minecraft identity's rank grant this permission node? Mirrors the plugins'
+// matcher (literal, `prefix.*` wildcard, or global `*`), so the panel can re-check staff-only
+// in-game actions (e.g. /maintenance) rather than trusting the request blindly.
+export function playerHasNode(name: string, uuid: string, node: string): boolean {
+  const net = store.getNetwork();
+  if (!net) return false;
+  const { ranks, players } = ranksOf(net);
+  const byId = new Map((ranks ?? []).map((r) => [r.id, r]));
+  const undashed = uuid.replace(/-/g, '').toLowerCase();
+  const rankId = players[undashed] ?? players[uuid.toLowerCase()] ?? players[name.toLowerCase()] ?? DEFAULT_RANK_ID;
+  const rank = byId.get(rankId) ?? byId.get(DEFAULT_RANK_ID);
+  const perms = rank?.permissions ?? [];
+  return perms.some((p) => p === '*' || p === node || (p.endsWith('.*') && node.startsWith(p.slice(0, -1))));
+}
+
 // Push the current rank model to both volumes — called after any rank edit.
 export async function pushRanks(): Promise<void> {
   const net = store.getNetwork();
@@ -405,7 +434,7 @@ export async function refresh(): Promise<boolean> {
   writeConfig(net, backends);
   // Mirror the live network into the lobby's network.json; the plugin watches it and
   // re-renders the selector on its own, so no in-game reload command is needed.
-  await writeNetworkJson(backends).catch(() => {});
+  await writeNetworkJson().catch(() => {});
   await writeRanksJson().catch(() => {});
   const st = await state();
   if (st.running) await send('velocity reload').catch(() => {});
@@ -427,26 +456,62 @@ function iconFor(s: Server): string {
   return DEFAULT_ICONS[h % DEFAULT_ICONS.length];
 }
 
-export async function writeNetworkJson(liveList?: Backend[]): Promise<void> {
+// A server's lifecycle as the selector shows it. `starting`/`restarting` are the window
+// between the container coming up and Minecraft actually accepting players (RCON answering);
+// they resolve to `online` the moment it is ready, or `offline` if it never comes up.
+export type NetStatus = 'online' | 'starting' | 'restarting' | 'offline';
+
+// A server we have just asked to start or restart, so the selector can show "Starting…" /
+// "Restarting…" until it is really ready instead of a bare "Offline". Cleared automatically
+// once it reports online, or after the window lapses (a boot that never finished).
+const transitions = new Map<string, { state: 'starting' | 'restarting'; until: number }>();
+export function markStarting(id: string): void { transitions.set(id, { state: 'starting', until: Date.now() + 120_000 }); }
+export function markRestarting(id: string): void { transitions.set(id, { state: 'restarting', until: Date.now() + 120_000 }); }
+
+// The live status of one backend: offline if the container is down; online (with a real
+// player count) once RCON answers; otherwise starting/restarting while it boots.
+async function statusOf(s: Server): Promise<{ status: NetStatus; players: number }> {
+  const st = await serverState(s.id).catch(() => null);
+  if (!st?.running) { transitions.delete(s.id); return { status: 'offline', players: 0 }; }
+  const p = await serverPlayers(s.id).catch(() => null);
+  if (p) { transitions.delete(s.id); return { status: 'online', players: p.online }; }
+  const t = transitions.get(s.id);
+  if (t && t.until > Date.now()) return { status: t.state, players: 0 };
+  return { status: 'starting', players: 0 }; // container up, MC not ready yet
+}
+
+// The last selector payload we wrote (minus its timestamp), so an unchanged network doesn't
+// keep bumping the file's mtime and forcing the lobby to re-parse it every few seconds.
+let lastNetworkJson = '';
+
+export async function writeNetworkJson(): Promise<void> {
   const lobby = store.lobbyServer();
   if (!lobby) return;
   const root = await dataDir(lobby.id).catch(() => null);
   if (!root) return;
-  const live = liveList ?? (await liveBackends());
-  const liveKeys = new Set(live.map((b) => b.key));
 
   // Every listed network backend — running or not — always shown, sorted by name. The
   // lobby itself is never in the list (players are already there; `/hub` brings them back).
-  const servers = store.listedServers()
+  const listed = store.listedServers()
     .filter((s) => s.role !== 'lobby' && s.backend)
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map((s) => ({
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const servers = await Promise.all(listed.map(async (s) => {
+    const { status, players } = await statusOf(s);
+    return {
       key: keyFor(s),
       name: s.name,
       material: iconMaterial(iconFor(s)),
-      online: liveKeys.has(keyFor(s)),
+      status,
+      online: status === 'online', // kept for older plugin builds
+      players,
+      maxPlayers: FREE_PLAN.maxPlayers,
       startable: s.lobbyStartable === true,
-    }));
+    };
+  }));
+
+  const payload = JSON.stringify({ servers });
+  if (payload === lastNetworkJson) return; // nothing changed — leave the file (and its mtime) alone
+  lastNetworkJson = payload;
 
   const dir = join(root, 'plugins', 'EndhostLobby');
   mkdirSync(dir, { recursive: true });

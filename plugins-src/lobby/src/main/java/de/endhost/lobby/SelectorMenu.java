@@ -70,6 +70,9 @@ final class SelectorMenu {
         if (e.online) {
             player.closeInventory();
             plugin.connectTo(player, e.key, e.name);
+        } else if (isTransitional(e)) {
+            player.sendMessage(Text.of("&e" + e.name + " is still " + label(e.status).toLowerCase() + "… &8hang on a moment."));
+            player.playSound(player.getLocation(), org.bukkit.Sound.UI_BUTTON_CLICK, 0.6f, 1.4f);
         } else if (e.startable) {
             player.closeInventory();
             plugin.startBridge().request(player, e.key);
@@ -78,20 +81,39 @@ final class SelectorMenu {
         }
     }
 
+    private static boolean isTransitional(NetworkModel.Entry e) {
+        return "starting".equals(e.status) || "restarting".equals(e.status);
+    }
+
+    private static String label(String status) {
+        return switch (status) {
+            case "online" -> "Online";
+            case "starting" -> "Starting…";
+            case "restarting" -> "Restarting…";
+            default -> "Offline";
+        };
+    }
+
     private ItemStack icon(NetworkModel.Entry e) {
         Material mat = Materials.byName(e.material, Material.GRASS_BLOCK);
-        String name = e.online ? "&a&l" + e.name : "&7&l" + e.name;
+        boolean trans = isTransitional(e);
+        String title = e.online ? "&a&l" + e.name : (trans ? "&e&l" + e.name : "&7&l" + e.name);
         List<String> lore = new ArrayList<>();
         if (e.online) {
-            lore.add("&8Status: &aOnline");
+            lore.add("&8Status: &a" + label(e.status));
+            lore.add("&8Players: &f" + e.players + "&7/&f" + e.maxPlayers);
             lore.add(" ");
             lore.add("&eClick to join");
+        } else if (trans) {
+            lore.add("&8Status: &e" + label(e.status));
+            lore.add(" ");
+            lore.add("&7Please wait — it'll be joinable soon.");
         } else {
-            lore.add("&8Status: &cOffline");
+            lore.add("&8Status: &c" + label(e.status));
             lore.add(" ");
             lore.add(e.startable ? "&eClick to start it" : "&8An admin can start it");
         }
-        return named(mat, name, lore.toArray(new String[0]));
+        return named(mat, title, lore.toArray(new String[0]));
     }
 
     private ItemStack arrow(String name, String lore) {

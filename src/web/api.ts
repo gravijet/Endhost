@@ -55,7 +55,7 @@ export interface MaintenanceInfo {
   runningServers: number;
 }
 
-export interface Me { email: string; credits: number; admin: boolean; serverLimit: number; serverCount: number; }
+export interface Me { email: string; credits: number; admin: boolean; serverLimit: number; serverCount: number; mcName: string | null; mcLinked: boolean; }
 export interface Tx { id: string; userId: string; delta: number; reason: string; at: number; balanceAfter: number; }
 export interface CreditsInfo { balance: number; alwaysOnPerHour: number; ledger: Tx[]; }
 export interface AdminUser { id: string; email: string; credits: number; admin: boolean; createdAt: number; servers: number; serverLimit: number; }
@@ -134,6 +134,9 @@ const q = (s: string) => encodeURIComponent(s);
 
 export const api = {
   me: () => req<Me | null>('GET', '/api/me'),
+  // Link a Minecraft account to this panel account (one-time code typed in-game as /link CODE).
+  linkCode: () => req<{ code: string; ttlSec: number; address: string }>('POST', '/api/link/code'),
+  unlink: () => req<{ ok: true }>('POST', '/api/link/unlink'),
   register: (email: string, password: string) => req<{ email: string }>('POST', '/api/auth/register', { email, password }),
   login: (email: string, password: string) => req<{ email: string }>('POST', '/api/auth/login', { email, password }),
   logout: () => req<{ ok: true }>('POST', '/api/auth/logout'),
@@ -220,6 +223,16 @@ export const api = {
   adminAssignRank: (player: string, rank: string) => req<{ ok: true; players: RankAssignment[] }>('POST', '/api/admin/ranks/assign', { player, rank }),
   adminMaintenance: () => req<MaintenanceInfo>('GET', '/api/admin/maintenance'),
   adminSetMaintenance: (on: boolean) => req<{ ok: true } & MaintenanceInfo>('POST', '/api/admin/maintenance', { on }),
+
+  // ---- proxy file manager (admin) — the Velocity volume, managed like a server's ----
+  proxyFilesList: (path: string) => req<DirListing>('GET', `/api/network/files/list?path=${q(path)}`),
+  proxyFileRead: (path: string) => req<{ path: string; content: string }>('GET', `/api/network/files/read?path=${q(path)}`),
+  proxyFileWrite: (path: string, content: string) => reqRaw<{ ok: true }>('PUT', `/api/network/files/write?path=${q(path)}`, content, 'text/plain'),
+  proxyFileMkdir: (path: string) => req<{ ok: true }>('POST', '/api/network/files/mkdir', { path }),
+  proxyFileRename: (from: string, to: string) => req<{ ok: true }>('POST', '/api/network/files/rename', { from, to }),
+  proxyFileDelete: (path: string) => req<{ ok: true }>('POST', '/api/network/files/delete', { path }),
+  proxyFileUpload: (path: string, data: Blob) => reqRaw<{ ok: true; size: number }>('PUT', `/api/network/files/upload?path=${q(path)}`, data, 'application/octet-stream'),
+  proxyFileDownloadUrl: (path: string) => `/api/network/files/download?path=${q(path)}`,
 
   // ---- credits / admin ----
   credits: () => req<CreditsInfo>('GET', '/api/credits'),

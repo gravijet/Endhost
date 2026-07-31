@@ -14,7 +14,7 @@ import {
   ALLOWED_VERSIONS, DEFAULT_VERSION, IDLE_SLEEP_MS, REAPER_INTERVAL_MS,
   SOFTWARE, DEFAULT_SOFTWARE, softwareById, versionsFor, SFTP, CREDITS, ADMIN_EMAIL, MCROUTER, BACKUPS,
   NETWORK, NETWORK_ICONS, DEFAULT_ICONS, LOBBY, LOBBY_ENV, LOBBY_PLUGINS, LOBBY_JAR, PROXY_MOTD,
-  DEFAULT_RANKS, DEFAULT_RANK_ID, PERMISSION_NODES,
+  DEFAULT_RANKS, DEFAULT_RANK_ID, PERMISSION_NODES, LINK,
 } from './config.js';
 import { store, type Server, type Rank } from './store.js';
 import * as mc from './docker.js';
@@ -207,7 +207,41 @@ app.get('/api/me', wrap((req, res) => {
   res.json(u ? {
     email: u.email, credits: store.creditsOf(u.id), admin: !!u.admin,
     serverLimit: serverLimitOf(u), serverCount: store.serversOf(u.id).length,
+    mcName: u.mcName ?? null, mcLinked: !!u.mcUuid,
   } : null);
+}));
+
+// ---- linking a Minecraft account -------------------------------------------
+// The account can bind one Minecraft identity: the panel mints a one-time code, the player
+// types `/link CODE` in-game, the proxy relays it through the control bridge (see
+// pollProxyControl) and we record the UUID. Codes are single-use and short-lived, so a code
+// seen over someone's shoulder is worthless a few minutes later.
+const linkCodes = new Map<string, { userId: string; expires: number }>();
+const LINK_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
+function mintLinkCode(userId: string): string {
+  for (const [c, v] of linkCodes) if (v.expires < Date.now()) linkCodes.delete(c);
+  // Drop any earlier code this account was handed, so only the newest one works.
+  for (const [c, v] of linkCodes) if (v.userId === userId) linkCodes.delete(c);
+  let code = '';
+  do {
+    code = '';
+    const bytes = randomBytes(LINK.codeLen);
+    for (let i = 0; i < LINK.codeLen; i++) code += LINK_ALPHABET[bytes[i] % LINK_ALPHABET.length];
+  } while (linkCodes.has(code));
+  linkCodes.set(code, { userId, expires: Date.now() + LINK.ttlMs });
+  return code;
+}
+
+app.post('/api/link/code', wrap((req, res) => {
+  const u = requireUser(req, res); if (!u) return;
+  const code = mintLinkCode(u.id);
+  res.json({ code, ttlSec: Math.floor(LINK.ttlMs / 1000), address: proxyAddress(store.getNetwork()?.port ?? NETWORK.port) });
+}));
+
+app.post('/api/link/unlink', wrap((req, res) => {
+  const u = requireUser(req, res); if (!u) return;
+  store.updateUser(u.id, { mcUuid: undefined, mcName: undefined });
+  res.json({ ok: true });
 }));
 
 // The account's Guthaben: balance, the always-on price, and a recent ledger so a
@@ -426,6 +460,7 @@ app.post('/api/servers/:id/start', wrap(async (req, res) => {
   else await mc.createAndStart(ok.server, backendOptsFor(ok.server));
   store.touchServer(ok.server.id, { lastActive: Date.now() });
   store.logEvent(ok.server.id, 'start', 'started from the panel');
+  network.markStarting(ok.server.id); // selector shows "Starting…" until it is really up
   void network.refresh().catch(() => {});
   res.json({ ok: true });
 }));
@@ -446,6 +481,8 @@ app.post('/api/servers/:id/restart', wrap(async (req, res) => {
   await mc.restart(ok.server.id);
   store.touchServer(ok.server.id, { lastActive: Date.now() });
   store.logEvent(ok.server.id, 'restart', 'restarted from the panel');
+  network.markRestarting(ok.server.id); // selector shows "Restarting…" until it is back up
+  void network.refresh().catch(() => {});
   res.json({ ok: true });
 }));
 
@@ -1325,6 +1362,70 @@ app.get('/api/servers/:id/files/download', wrap(async (req, res) => {
   } catch (e) { fileErr(res, e); }
 }));
 
+// ------------------------------------------------------------ proxy files API
+// The Velocity proxy is a manageable server too: an admin can browse and edit its whole
+// /server volume (velocity.toml, the plugins, EndhostProxy's config) the same way as any
+// server's volume — same confinement, same text/binary rules. Admin only; the proxy fronts
+// the entire host. Its console is the WebSocket at /api/network/console.
+app.get('/api/network/files/list', wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try { res.json(await files.list(network.proxyRoot(), String(req.query.path || ''))); }
+  catch (e) { fileErr(res, e); }
+}));
+
+app.get('/api/network/files/read', wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try { res.json(await files.readText(network.proxyRoot(), String(req.query.path || ''))); }
+  catch (e) { fileErr(res, e); }
+}));
+
+app.put('/api/network/files/write', express.text({ type: '*/*', limit: '4mb' }), wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    await files.writeText(network.proxyRoot(), String(req.query.path || ''), typeof req.body === 'string' ? req.body : '');
+    res.json({ ok: true });
+  } catch (e) { fileErr(res, e); }
+}));
+
+app.post('/api/network/files/mkdir', wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try { await files.mkdir(network.proxyRoot(), String(req.body?.path || '')); res.json({ ok: true }); }
+  catch (e) { fileErr(res, e); }
+}));
+
+app.post('/api/network/files/rename', wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try { await files.rename(network.proxyRoot(), String(req.body?.from || ''), String(req.body?.to || '')); res.json({ ok: true }); }
+  catch (e) { fileErr(res, e); }
+}));
+
+app.post('/api/network/files/delete', wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try { await files.remove(network.proxyRoot(), String(req.body?.path || '')); res.json({ ok: true }); }
+  catch (e) { fileErr(res, e); }
+}));
+
+app.put('/api/network/files/upload', wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    const target = String(req.query.path || '');
+    if (!target) throw new files.FileError('No destination given.', 400);
+    const { size } = await files.saveUpload(network.proxyRoot(), target, req);
+    res.json({ ok: true, size });
+  } catch (e) { fileErr(res, e); }
+}));
+
+app.get('/api/network/files/download', wrap(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    const info = await files.statFile(network.proxyRoot(), String(req.query.path || ''));
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Length', String(info.size));
+    res.setHeader('Content-Disposition', `attachment; filename="${info.name.replace(/["\\\r\n]/g, '_')}"`);
+    files.openRead(info.full).on('error', () => { if (!res.headersSent) res.status(500).end(); }).pipe(res);
+  } catch (e) { fileErr(res, e); }
+}));
+
 // ---------------------------------------------------------------- backups API
 // Real gzipped-tar snapshots of the server's whole /data volume. Create/list/
 // restore/download/delete, all gated by the disk caps in config. See backups.ts.
@@ -1545,6 +1646,7 @@ async function reap() {
       if (Date.now() - s.lastActive > IDLE_SLEEP_MS) {
         console.log(`[endhost] sleeping idle server ${s.id}`);
         await mc.stop(s.id).catch(() => {});
+        void network.refresh().catch(() => {}); // drop it from the proxy + flip the selector to Offline
       }
     } catch { /* skip this pass */ }
   }
@@ -1664,6 +1766,156 @@ async function pollLobbyStarts(): Promise<void> {
 }
 setInterval(() => { void pollLobbyStarts().catch(() => {}); }, 2000).unref();
 
+// ------------------------------------------------------ proxy control bridge
+// A player who has linked their Minecraft account can control their own servers from anywhere
+// on the network: /start, /stop, /restart. The proxy plugin drops a request file into its own
+// volume; we act on it here (ownership always re-checked panel-side) and write a reply. Also
+// carries /link (bind a Minecraft account to this panel account) and /maintenance (staff).
+
+// Perform an owner power action on one of their servers, returning the line the player sees.
+async function controlServerFor(userId: string, key: string, action: 'start' | 'stop' | 'restart'): Promise<{ ok: boolean; message: string }> {
+  const s = store.allServers().find((sv) => sv.role !== 'lobby' && network.keyFor(sv) === key);
+  if (!s) return { ok: false, message: `No server called "${key}".` };
+  if (s.owner !== userId) return { ok: false, message: "That server isn't yours." };
+  if ((action === 'start' || action === 'restart') && store.getMaintenance())
+    return { ok: false, message: 'The host is in maintenance right now — try again shortly.' };
+  const st = await mc.state(s.id).catch(() => null);
+  try {
+    if (action === 'stop') {
+      if (!st?.running) return { ok: true, message: `${s.name} is already stopped.` };
+      await mc.stop(s.id);
+      store.logEvent(s.id, 'stop', 'stopped in-game by the owner');
+      void network.refresh().catch(() => {});
+      return { ok: true, message: `${s.name} is stopping.` };
+    }
+    if (action === 'restart') {
+      if (!st?.exists) return { ok: false, message: `${s.name} has never started — use /start.` };
+      await forceBackendConfig(s);
+      await mc.restart(s.id);
+      store.touchServer(s.id, { lastActive: Date.now() });
+      store.logEvent(s.id, 'restart', 'restarted in-game by the owner');
+      network.markRestarting(s.id);
+      void network.refresh().catch(() => {});
+      return { ok: true, message: `${s.name} is restarting — it'll be back in the selector shortly.` };
+    }
+    // start
+    if (st?.running) return { ok: true, message: `${s.name} is already online — open the selector to join.` };
+    if ((await runningCount()) >= LIMITS.maxConcurrentRunning)
+      return { ok: false, message: 'All live server slots are busy right now — try again shortly.' };
+    await forceBackendConfig(s);
+    if (st?.exists) await mc.start(s.id); else await mc.createAndStart(s, backendOptsFor(s));
+    store.touchServer(s.id, { lastActive: Date.now() });
+    store.logEvent(s.id, 'start', 'started in-game by the owner');
+    network.markStarting(s.id);
+    void network.refresh().catch(() => {});
+    return { ok: true, message: `${s.name} is starting — it'll show online in the selector in a moment.` };
+  } catch (e: any) {
+    return { ok: false, message: `Couldn't ${action} ${s.name}: ${e?.message || e}` };
+  }
+}
+
+// A one-line summary of a user's servers for /myservers, newest-looking first (running first).
+async function listServersFor(userId: string): Promise<string> {
+  const mine = store.serversOf(userId).filter((s) => s.role !== 'lobby');
+  if (!mine.length) return 'servers=You have no servers yet — create one at example.invalid.';
+  const rows = await Promise.all(mine.map(async (s) => {
+    const st = await mc.state(s.id).catch(() => null);
+    let count = 0;
+    if (st?.running) { const p = await mc.players(s.id).catch(() => null); if (p) count = p.online; }
+    const status = st?.running ? `online (${count})` : 'offline';
+    return `${network.keyFor(s)} — ${s.name} · ${status}`;
+  }));
+  return 'servers=' + rows.join('||');
+}
+
+function parseKv(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of text.split('\n')) {
+    const i = line.indexOf('=');
+    if (i < 0) continue;
+    out[line.slice(0, i).trim()] = line.slice(i + 1);
+  }
+  return out;
+}
+
+async function handleControlRequest(kv: Record<string, string>): Promise<Record<string, string>> {
+  const type = (kv.type || '').trim();
+  const uuid = (kv.uuid || '').trim();
+  const name = (kv.name || '').trim();
+
+  if (type === 'link') {
+    const code = (kv.code || '').trim().toUpperCase();
+    const entry = linkCodes.get(code);
+    if (!entry || entry.expires < Date.now()) { linkCodes.delete(code); return { ok: 'false', message: "That link code is wrong or expired. Get a fresh one on your Account page." }; }
+    linkCodes.delete(code);
+    // Don't let two panel accounts claim the same Minecraft UUID.
+    const clash = store.userByMc(uuid);
+    if (clash && clash.id !== entry.userId) return { ok: 'false', message: 'That Minecraft account is already linked to another Endhost account.' };
+    store.updateUser(entry.userId, { mcUuid: uuid.replace(/-/g, '').toLowerCase(), mcName: name });
+    const email = store.userById(entry.userId)?.email ?? 'your account';
+    return { ok: 'true', message: `Linked to ${email}. You can now /start, /stop and /restart your servers in-game.` };
+  }
+
+  if (type === 'maintenance') {
+    if (!network.playerHasNode(name, uuid, 'endhost.staff')) return { ok: 'false', message: "You don't have permission for that." };
+    const on = /^(on|true|1|yes)$/i.test((kv.value || '').trim());
+    network.provision();
+    store.patchNetwork({ netMaintenance: on });
+    const net = store.getNetwork(); if (net) network.writeProxyConfig(net);
+    return { ok: 'true', message: on ? 'Network maintenance is now ON — only staff and whitelisted players can join.' : 'Network maintenance is now OFF.' };
+  }
+
+  // Everything below needs a linked account.
+  const user = store.userByMc(uuid, name);
+  if (!user) return { ok: 'false', message: 'Link your Minecraft account first: get a code on your Account page at example.invalid, then /link CODE.' };
+
+  if (type === 'list') return { ok: 'true', ...(parseKv(await listServersFor(user.id))) };
+
+  if (type === 'start' || type === 'stop' || type === 'restart') {
+    const key = (kv.server || '').trim().toLowerCase();
+    if (!key) return { ok: 'false', message: `Name a server: /${type} <server>. See /myservers for the list.` };
+    const r = await controlServerFor(user.id, key, type);
+    return { ok: String(r.ok), message: r.message };
+  }
+
+  return { ok: 'false', message: 'Unknown request.' };
+}
+
+async function pollProxyControl(): Promise<void> {
+  const base = network.proxyControlDir();
+  const reqDir = join(base, 'requests'), resDir = join(base, 'responses');
+  let requests: string[];
+  try { requests = readdirSync(reqDir); } catch { return; } // dir not created yet
+  for (const f of requests) {
+    if (!f.endsWith('.req')) continue;
+    const reqPath = join(reqDir, f);
+    let out: Record<string, string> = { ok: 'false', message: 'That request could not be handled.' };
+    try {
+      const kv = parseKv(readFileSync(reqPath, 'utf8'));
+      out = await handleControlRequest(kv);
+    } catch (e: any) { out = { ok: 'false', message: 'Something went wrong handling that.' }; }
+    try {
+      mkdirSync(resDir, { recursive: true });
+      const body = Object.entries(out).map(([k, v]) => `${k}=${String(v).replace(/\n/g, ' ')}`).join('\n') + '\n';
+      writeFileSync(join(resDir, `${f.slice(0, -4)}.res`), body);
+      mc.chownTree(resDir);
+    } catch { /* the player just won't get a reply */ }
+    try { rmSync(reqPath, { force: true }); } catch { /* ignore */ }
+  }
+}
+
+// Keep the in-game selector honest without waiting for a topology change: re-derive every
+// server's live status (offline / starting / restarting / online + player count) and, if it
+// actually moved, rewrite network.json. The writer skips the disk entirely when nothing
+// changed, so this is cheap even though it runs often. This is what makes a server that went
+// to sleep, woke on a join, or is still booting show the right thing within a few seconds.
+setInterval(() => { void network.writeNetworkJson().catch(() => {}); }, 4000).unref();
+
+// The control bridge: owner /start·/stop·/restart, /link and /maintenance typed on the proxy
+// land here as request files in the proxy volume. Same file-drop trust boundary as the lobby
+// start-bridge — no inbound port. See pollProxyControl.
+setInterval(() => { void pollProxyControl().catch(() => {}); }, 2000).unref();
+
 // --------------------------------------------------------------------- boot
 // A join to a sleeping server wakes it, if a live slot is free. Debounced so a
 // client's reconnect attempts don't pile up starts.
@@ -1680,6 +1932,8 @@ async function wakeOnJoin(s: Server): Promise<void> {
     await forceBackendConfig(s);
     if (st.exists) await mc.start(s.id); else await mc.createAndStart(s, backendOptsFor(s));
     store.touchServer(s.id, { lastActive: Date.now() });
+    network.markStarting(s.id);
+    void network.refresh().catch(() => {}); // register it with the proxy + show "Starting…" in the selector
     console.log(`[endhost] woke ${s.id} on a join attempt`);
   } catch (e: any) {
     console.error('[endhost] wake failed:', e?.message || e);

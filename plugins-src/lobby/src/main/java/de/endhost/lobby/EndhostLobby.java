@@ -74,11 +74,13 @@ public final class EndhostLobby extends JavaPlugin {
 
         getServer().getMessenger().registerOutgoingPluginChannel(this, BUNGEE_CHANNEL);
         getServer().getPluginManager().registerEvents(new LobbyListener(this), this);
+        // Keep the hub static and safe: block every way a non-staff player could change it.
+        getServer().getPluginManager().registerEvents(new Protection(this), this);
 
         CommandRouter router = new CommandRouter(this);
         for (String name : List.of("setspawn", "spawn", "servers", "start", "gm", "gmc", "gms", "gma",
                 "gmsp", "fly", "speed", "tp", "tphere", "broadcast", "heal", "feed", "day", "night",
-                "lobbyreload", "vanish", "clearchat", "rank", "players")) {
+                "lobbyreload", "vanish", "clearchat", "rank", "players", "help", "ehhelp")) {
             if (getCommand(name) != null) getCommand(name).setExecutor(router);
         }
 

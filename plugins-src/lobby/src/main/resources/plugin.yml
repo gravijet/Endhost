@@ -69,3 +69,6 @@ commands:
   lobbyreload:
     description: Reload lobby config, ranks and network list (admin).
     aliases: [lr]
+  help:
+    description: Show the list of commands.
+    aliases: [ehhelp, commands]

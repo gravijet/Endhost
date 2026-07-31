@@ -3,6 +3,7 @@ package de.endhost.proxy;
 import com.google.inject.Inject;
 import com.velocitypowered.api.command.CommandManager;
 import com.velocitypowered.api.command.CommandMeta;
+import com.velocitypowered.api.command.SimpleCommand;
 import com.velocitypowered.api.event.ResultedEvent;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.connection.LoginEvent;
@@ -44,6 +45,7 @@ public final class EndhostProxy {
     private final Logger logger;
     private final Path configFile;
     private final Path ranksFile;
+    private final ControlBridge control;
 
     private volatile NetworkConfig config = NetworkConfig.defaults();
     private volatile RankConfig ranks = RankConfig.empty();
@@ -56,23 +58,44 @@ public final class EndhostProxy {
         this.logger = logger;
         this.configFile = dataDirectory.resolve("config.txt");
         this.ranksFile = dataDirectory.resolve("ranks.txt");
+        this.control = new ControlBridge(server, logger, dataDirectory);
+    }
+
+    /** Whether network maintenance is currently in effect (used by {@code /maintenance} with no argument). */
+    boolean isMaintenance() {
+        return config.maintenance;
     }
 
     @Subscribe
     public void onInit(ProxyInitializeEvent event) {
         reload();
+        control.init();
         // Watch config.txt for panel writes and re-read on change — no restart needed.
         server.getScheduler().buildTask(this, this::reloadIfChanged)
                 .repeat(2, TimeUnit.SECONDS)
                 .schedule();
+        // Poll the control bridge for panel replies to /link, /start·/stop·/restart, /maintenance.
+        server.getScheduler().buildTask(this, control::tick)
+                .repeat(1, TimeUnit.SECONDS)
+                .schedule();
 
         CommandManager commands = server.getCommandManager();
-        CommandMeta lobbyMeta = commands.metaBuilder("hub").aliases("l", "lobby").plugin(this).build();
-        commands.register(lobbyMeta, new LobbyCommand(server));
-        CommandMeta adminMeta = commands.metaBuilder("endhostproxy").plugin(this).build();
-        commands.register(adminMeta, new AdminCommand(this));
+        register(commands, new LobbyCommand(server), "hub", "l", "lobby");
+        register(commands, new AdminCommand(this), "endhostproxy");
+        // Owner server control from anywhere on the network (ownership re-checked panel-side).
+        register(commands, new LinkCommand(control), "link");
+        register(commands, new ServersCommand(control), "myservers", "servers");
+        register(commands, new ControlCommand(control, "start"), "start");
+        register(commands, new ControlCommand(control, "stop"), "stop");
+        register(commands, new ControlCommand(control, "restart"), "restart");
+        register(commands, new MaintenanceCommand(control, this), "maintenance");
 
         logger.info("EndhostProxy enabled — maintenance={}", config.maintenance);
+    }
+
+    private void register(CommandManager commands, SimpleCommand command, String name, String... aliases) {
+        CommandMeta meta = commands.metaBuilder(name).aliases(aliases).plugin(this).build();
+        commands.register(meta, command);
     }
 
     /** Serve the active MOTD (normal or maintenance) on the server-list ping. */

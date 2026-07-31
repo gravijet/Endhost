@@ -1,7 +1,7 @@
 import { wireClicks, sound } from './sound.js';
 import { el, $, clear, toast } from './dom.js';
 import { motdToHtml, fmtBytes, ago } from './mc.js';
-import { api, ApiError, type Meta, type ServerDetail, type ServerSummary, type LiveState, type FileEntry, type SftpInfo, type ModHit, type Me, type CreditsInfo, type AdminUser, type AdminServer, type Tx, type Backup, type Roster, type PlayerAction, type WorldInfo, type GameRuleDef, type DomainInfo, type DomainCheck, type MetricsInfo, type SchedulesInfo, type Schedule, type ScheduleActionDef, type NetworkServer, type AdminNetworkServer, type ProxyAction, type MaintenanceInfo, type Rank, type RankAssignment, type RanksInfo } from './api.js';
+import { api, ApiError, type Meta, type ServerDetail, type ServerSummary, type LiveState, type FileEntry, type DirListing, type SftpInfo, type ModHit, type Me, type CreditsInfo, type AdminUser, type AdminServer, type Tx, type Backup, type Roster, type PlayerAction, type WorldInfo, type GameRuleDef, type DomainInfo, type DomainCheck, type MetricsInfo, type SchedulesInfo, type Schedule, type ScheduleActionDef, type NetworkServer, type AdminNetworkServer, type ProxyAction, type MaintenanceInfo, type Rank, type RankAssignment, type RanksInfo } from './api.js';
 
 wireClicks();
 
@@ -27,9 +27,14 @@ type Route =
   | { kind: 'new' }
   | { kind: 'server'; id: string; section: ServerSection }
   | { kind: 'network' }
+  | { kind: 'proxy'; section: ProxySection }
+  | { kind: 'docs' }
   | { kind: 'billing' }
   | { kind: 'account' }
   | { kind: 'admin'; section: 'accounts' | 'servers' | 'ranks' };
+
+type ProxySection = 'console' | 'files' | 'settings';
+const PROXY_SECTIONS: ProxySection[] = ['console', 'files', 'settings'];
 
 function parseHash(): Route {
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
@@ -38,6 +43,11 @@ function parseHash(): Route {
     return { kind: 'server', id: parts[1], section: SERVER_SECTIONS.includes(sec) ? sec : 'overview' };
   }
   if (parts[0] === 'network') return { kind: 'network' };
+  if (parts[0] === 'proxy') {
+    const sec = (parts[1] as ProxySection) || 'console';
+    return { kind: 'proxy', section: PROXY_SECTIONS.includes(sec) ? sec : 'console' };
+  }
+  if (parts[0] === 'docs') return { kind: 'docs' };
   if (parts[0] === 'billing') return { kind: 'billing' };
   if (parts[0] === 'account') return { kind: 'account' };
   if (parts[0] === 'admin') return { kind: 'admin', section: parts[1] === 'servers' ? 'servers' : parts[1] === 'ranks' ? 'ranks' : 'accounts' };
@@ -131,6 +141,8 @@ async function showApp(): Promise<void> {
     sideList,
     el('div', { class: 'side-nav' },
       navLink('network', '#/network', '⬡ Network'),
+      ...(me?.admin ? [navLink('proxy', '#/proxy/console', '⇄ Proxy')] : []),
+      navLink('docs', '#/docs', '❓ Docs'),
       navLink('billing', '#/billing', '◈ Guthaben'),
       navLink('account', '#/account', '☰ Account'),
       ...(me?.admin ? [navLink('admin', '#/admin/accounts', '⚙ Admin')] : []),
@@ -203,7 +215,7 @@ function setDot(id: string, st: LiveState): void { const dot = serverDots.get(id
 
 function updateSideActive(r: Route = parseHash()): void {
   const activeId = r.kind === 'server' ? r.id : null;
-  const navKind = r.kind === 'network' || r.kind === 'billing' || r.kind === 'account' || r.kind === 'admin' ? r.kind : null;
+  const navKind = r.kind === 'network' || r.kind === 'proxy' || r.kind === 'docs' || r.kind === 'billing' || r.kind === 'account' || r.kind === 'admin' ? r.kind : null;
   sideList.querySelectorAll('.srv-item').forEach((n) => n.classList.toggle('active', (n as HTMLElement).dataset.srv === activeId));
   sideNav?.querySelectorAll('.side-nav-item').forEach((n) => n.classList.toggle('active', (n as HTMLElement).dataset.nav === navKind));
 }
@@ -231,6 +243,8 @@ function route(): void {
     content.append(renderServer(s, sec));
   } else if (r.kind === 'new') content.append(renderCreate());
   else if (r.kind === 'network') content.append(renderNetwork());
+  else if (r.kind === 'proxy') content.append(renderProxy(r.section));
+  else if (r.kind === 'docs') content.append(renderDocs());
   else if (r.kind === 'billing') content.append(renderBilling());
   else if (r.kind === 'account') content.append(renderAccount());
   else content.append(renderAdmin(r.section));
@@ -729,6 +743,136 @@ function buildNetworkSettings(container: HTMLElement): void {
   void load();
 }
 
+// ------------------------------------------------------------------ proxy view
+// The Velocity proxy managed like any other server: its live console, its whole file tree, and
+// its power/network settings. Admin only — it fronts the entire host.
+function proxySubnav(section: ProxySection): HTMLElement {
+  const item = (id: ProxySection, label: string) =>
+    el('a', { class: 'sv-nav-item' + (section === id ? ' active' : ''), href: `#/proxy/${id}`, onclick: () => sound.click() }, label);
+  return el('div', { class: 'sv-nav' }, item('console', 'Console'), item('files', 'Files'), item('settings', 'Settings'));
+}
+
+// The proxy's real Velocity terminal, embedded in the page: docker logs streamed in, commands
+// typed straight back over the same WebSocket the modal console uses.
+function buildProxyConsoleNode(): HTMLElement {
+  const out = el('div', { class: 'console-out mono' });
+  const cmd = el('input', { class: 'input', placeholder: 'type a Velocity command, e.g. server', autocomplete: 'off', spellcheck: 'false' }) as HTMLInputElement;
+  function push(text: string, cls = 'l-info'): void {
+    const atBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
+    out.append(el('div', { class: cls }, text));
+    while (out.childElementCount > 500) out.firstChild && out.removeChild(out.firstChild);
+    if (atBottom) out.scrollTop = out.scrollHeight;
+  }
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  let ws: WebSocket | null = new WebSocket(`${proto}://${location.host}/api/network/console`);
+  push('[endhost] connecting to the proxy console…', 'l-sys');
+  ws.onmessage = (e) => String(e.data).split('\n').forEach((line) => {
+    if (!line) return;
+    let cls = 'l-info';
+    if (/\bWARN\b/.test(line)) cls = 'l-warn';
+    if (/ERROR|FATAL|Exception/.test(line)) cls = 'l-err';
+    if (/has connected|-> |is now connected/.test(line)) cls = 'l-you';
+    if (line.startsWith('[endhost]')) cls = 'l-sys';
+    push(line, cls);
+  });
+  ws.onclose = () => push('[endhost] console closed.', 'l-sys');
+  ws.onerror = () => push('[endhost] console error.', 'l-err');
+  onDispose(() => { ws?.close(); ws = null; });
+
+  const form = el('form', { class: 'console-form',
+    onsubmit: (e: Event) => { e.preventDefault(); const c = cmd.value.trim(); if (!c) return; cmd.value = ''; push(`> ${c}`, 'l-you'); try { ws?.send(c); } catch { /* closed */ } },
+  }, el('span', { class: 'prompt' }, '>'), cmd, el('button', { class: 'btn btn-sm', type: 'submit' }, 'Send'));
+
+  const quicks: [string, string][] = [['Servers', 'server'], ['Players', 'glist'], ['Reload', 'velocity reload']];
+  const quick = el('div', { class: 'console-quick' }, el('span', { class: 'cq-label' }, 'Quick:'),
+    ...quicks.map(([label, c]) => el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => { push(`> ${c}`, 'l-you'); try { ws?.send(c); } catch { /* closed */ } } }, label)));
+
+  return el('div', { class: 'entry console' },
+    el('div', { class: 'console-head' }, el('span', { class: 'k' }, 'Proxy console'), el('span', { class: 'k t-mute' }, 'Velocity · live')),
+    out, quick, form,
+  );
+}
+
+function renderProxy(section: ProxySection): HTMLElement {
+  if (!me?.admin) return el('div', { class: 'page' }, pageHead('Proxy', 'Admins only.'), el('div', { class: 'entry empty' }, 'The network proxy is managed by admins.'));
+  let body: HTMLElement;
+  if (section === 'files') body = renderFiles(proxyFileOps(), 'velocity.toml · plugins · config');
+  else if (section === 'settings') { body = el('div', {}); buildMaintenanceControl(body); buildProxyControl(body, async () => {}); buildNetworkSettings(body); }
+  else body = buildProxyConsoleNode();
+  return el('div', { class: 'page' },
+    pageHead('Proxy', 'The Velocity proxy is a server too — its live console, its whole file tree, and its power and network settings, all in one place.'),
+    proxySubnav(section),
+    body,
+  );
+}
+
+// ------------------------------------------------------------------- docs view
+// A plain, honest command reference. Everything here is a real command one of the two plugins
+// registers; the in-game /help mirrors it. Grouped by who can run it.
+interface DocCmd { cmd: string; desc: string; }
+interface DocGroup { title: string; note: string; cmds: DocCmd[]; }
+const DOC_GROUPS: DocGroup[] = [
+  {
+    title: 'Everyone', note: 'Open to every player, anywhere on the network.',
+    cmds: [
+      { cmd: '/help', desc: 'Show the in-game command list (staff see the staff tools too).' },
+      { cmd: '/hub · /lobby · /l', desc: 'Jump back to the lobby from any server.' },
+      { cmd: '/spawn', desc: 'Teleport to the hub spawn while in the lobby.' },
+      { cmd: '/servers · /menu', desc: 'Open the server selector.' },
+      { cmd: '/players', desc: 'Show or hide other players in the lobby.' },
+      { cmd: '/rank [player]', desc: "See your own or another player's rank." },
+    ],
+  },
+  {
+    title: 'Your servers', note: 'Link your Minecraft account once on the Account page, then control your own servers from in-game.',
+    cmds: [
+      { cmd: '/link <code>', desc: 'Bind your Minecraft account to this panel account (one-time code).' },
+      { cmd: '/myservers', desc: 'List the servers you own and whether each is online.' },
+      { cmd: '/start <server>', desc: 'Start one of your servers.' },
+      { cmd: '/stop <server>', desc: 'Stop one of your servers.' },
+      { cmd: '/restart <server>', desc: 'Restart one of your servers.' },
+    ],
+  },
+  {
+    title: 'Staff', note: 'Gated by the rank permission nodes — assign them on the Admin → Ranks page.',
+    cmds: [
+      { cmd: '/gm · /gmc · /gms · /gma · /gmsp [player]', desc: 'Change game mode.' },
+      { cmd: '/fly [player]', desc: 'Toggle real flight (everyone still has the double-jump).' },
+      { cmd: '/speed <1-10>', desc: 'Set your fly/walk speed.' },
+      { cmd: '/tp <player> · /tphere <player>', desc: 'Teleport to or summon a player.' },
+      { cmd: '/heal [player] · /feed [player]', desc: 'Restore health / hunger.' },
+      { cmd: '/vanish · /v', desc: 'Hide yourself from non-staff.' },
+      { cmd: '/broadcast <msg> · /bc', desc: 'Announce a message to the lobby.' },
+      { cmd: '/clearchat · /cc', desc: 'Clear chat for everyone.' },
+      { cmd: '/day · /night', desc: 'Set the hub time.' },
+      { cmd: '/setspawn', desc: 'Set the hub spawn to where you stand.' },
+      { cmd: '/lobbyreload · /lr', desc: 'Reload lobby config, ranks and the server list.' },
+      { cmd: '/maintenance [on|off]', desc: 'Toggle network maintenance (turns non-staff away).' },
+    ],
+  },
+];
+
+function renderDocs(): HTMLElement {
+  const groups = DOC_GROUPS.map((g) => {
+    const rows = g.cmds.map((c) => el('div', { class: 'doc-row' },
+      el('code', { class: 'doc-cmd' }, c.cmd),
+      el('span', { class: 'doc-desc t-mute sh' }, c.desc),
+    ));
+    return el('div', { class: 'entry adm', style: 'margin-top:16px' },
+      el('div', { class: 'card-head' }, el('span', { class: 'k' }, g.title), el('span', { class: 'k t-mute' }, `${g.cmds.length} commands`)),
+      el('p', { class: 'set-lead t-mute sh' }, g.note),
+      el('div', { class: 'doc-list' }, ...rows),
+    );
+  });
+  const intro = el('div', { class: 'entry pad' },
+    el('p', { class: 'set-lead t-mute sh' },
+      'Every command the network understands, and who can run it. The same list is in-game as ',
+      el('code', {}, '/help'), '. The owner commands need your Minecraft account linked — do that on your ',
+      el('a', { class: 'crumb', href: '#/account' }, 'Account page'), '.'),
+  );
+  return el('div', { class: 'page' }, pageHead('Docs', 'Command reference for the whole network — lobby, proxy and your own servers.'), intro, ...groups);
+}
+
 // ------------------------------------------------------------------ server view
 interface NavDef { id: ServerSection; label: string; }
 
@@ -800,7 +944,7 @@ function renderServer(summary: ServerSummary, section: ServerSection): HTMLEleme
   else if (section === 'console') { cons = buildConsole(summary.id); body = cons.node; }
   else if (section === 'players') body = renderPlayers(summary.id);
   else if (section === 'world') body = renderWorld(summary.id);
-  else if (section === 'files') body = renderFiles(summary.id);
+  else if (section === 'files') body = renderFiles(serverFileOps(summary.id));
   else if (section === 'plugins') body = renderMarket(summary.id, summary.kind as 'plugins' | 'mods');
   else if (section === 'backups') body = renderBackups(summary);
   else if (section === 'schedule') body = renderSchedule(summary.id);
@@ -1753,8 +1897,66 @@ function renderAccount(): HTMLElement {
 
   return el('div', { class: 'page' },
     pageHead('Account', 'Your sign-in and plan. File-transfer credentials live under each server’s Access page.'),
-    profile, signout,
+    profile, linkMcCard(), signout,
   );
+}
+
+// Link a Minecraft account to this panel account: mint a one-time code, show the player the
+// /link command to type in-game, and poll until the proxy relays the confirmation back.
+function linkMcCard(): HTMLElement {
+  const body = el('div', {});
+  const card = el('div', { class: 'entry' },
+    el('div', { class: 'card-head' }, el('span', { class: 'k' }, 'Minecraft account'), el('span', { class: 'k t-mute' }, 'in-game control')),
+    body,
+  );
+  let poll = 0;
+  onDispose(() => { if (poll) window.clearInterval(poll); });
+
+  function render(): void {
+    clear(body);
+    if (me?.mcLinked) {
+      body.append(
+        el('p', { class: 'set-lead t-mute sh' }, 'Linked. You can start, stop and restart your own servers in-game with /start, /stop and /restart from anywhere on the network.'),
+        el('div', { class: 'acct-line' }, el('span', { class: 'acct-k' }, 'Linked as'), el('span', { class: 'acct-v' }, me.mcName ?? 'your Minecraft account')),
+        el('button', { class: 'btn btn-ghost btn-sm', onclick: async (e: Event) => {
+          const b = e.currentTarget as HTMLElement; b.classList.add('is-disabled');
+          try { await api.unlink(); await refreshMe(); render(); toast('Minecraft account unlinked.'); }
+          catch (err) { toast(fail(err), 'err'); b.classList.remove('is-disabled'); }
+        } }, 'Unlink'),
+      );
+      return;
+    }
+    body.append(
+      el('p', { class: 'set-lead t-mute sh' }, 'Link your Minecraft account to control your own servers in-game — /start, /stop and /restart, plus /myservers, from anywhere on the network.'),
+      el('button', { class: 'btn btn-portal btn-sm', onclick: (e: Event) => void begin(e.currentTarget as HTMLElement) }, '⛓ Link my Minecraft account'),
+    );
+  }
+
+  async function begin(btn: HTMLElement): Promise<void> {
+    btn.classList.add('is-disabled');
+    let info: { code: string; ttlSec: number; address: string };
+    try { info = await api.linkCode(); }
+    catch (e) { toast(fail(e), 'err'); btn.classList.remove('is-disabled'); return; }
+    clear(body);
+    body.append(
+      el('p', { class: 'set-lead t-mute sh' }, `Join ${info.address}, then type this in chat:`),
+      el('div', { class: 'link-steps' },
+        el('code', { class: 'link-code' }, `/link ${info.code}`),
+        el('button', { class: 'btn btn-ghost btn-xs', onclick: (e: Event) => copyText(`/link ${info.code}`, e) }, 'copy')),
+      el('div', { class: 'loading blink', style: 'padding:6px 0' }, 'Waiting for you to run it in-game '),
+    );
+    if (poll) window.clearInterval(poll);
+    let elapsed = 0;
+    poll = window.setInterval(async () => {
+      elapsed += 3;
+      await refreshMe();
+      if (me?.mcLinked) { window.clearInterval(poll); poll = 0; render(); toast('Minecraft account linked!'); return; }
+      if (elapsed >= info.ttlSec) { window.clearInterval(poll); poll = 0; render(); toast('That code expired — get a fresh one.', 'err'); }
+    }, 3000);
+  }
+
+  render();
+  return card;
 }
 
 // ------------------------------------------------------------------- admin
@@ -2228,7 +2430,36 @@ function fileGlyph(name: string): string {
   return 'TXT';
 }
 
-function renderFiles(serverId: string): HTMLElement {
+// The file manager works against any volume through this small adapter, so the same UI serves
+// both a server's /data and the proxy's /server volume.
+interface FileOps {
+  list(path: string): Promise<DirListing>;
+  read(path: string): Promise<{ path: string; content: string }>;
+  write(path: string, content: string): Promise<unknown>;
+  mkdir(path: string): Promise<unknown>;
+  rename(from: string, to: string): Promise<unknown>;
+  del(path: string): Promise<unknown>;
+  upload(path: string, data: Blob): Promise<unknown>;
+  downloadUrl(path: string): string;
+}
+function serverFileOps(id: string): FileOps {
+  return {
+    list: (p) => api.filesList(id, p), read: (p) => api.fileRead(id, p),
+    write: (p, c) => api.fileWrite(id, p, c), mkdir: (p) => api.fileMkdir(id, p),
+    rename: (f, t) => api.fileRename(id, f, t), del: (p) => api.fileDelete(id, p),
+    upload: (p, d) => api.fileUpload(id, p, d), downloadUrl: (p) => api.fileDownloadUrl(id, p),
+  };
+}
+function proxyFileOps(): FileOps {
+  return {
+    list: (p) => api.proxyFilesList(p), read: (p) => api.proxyFileRead(p),
+    write: (p, c) => api.proxyFileWrite(p, c), mkdir: (p) => api.proxyFileMkdir(p),
+    rename: (f, t) => api.proxyFileRename(f, t), del: (p) => api.proxyFileDelete(p),
+    upload: (p, d) => api.proxyFileUpload(p, d), downloadUrl: (p) => api.proxyFileDownloadUrl(p),
+  };
+}
+
+function renderFiles(ops: FileOps, subtitle = 'world · configs · plugins'): HTMLElement {
   let cwd = '/';
   const crumbs = el('div', { class: 'crumbs' });
   const list = el('div', { class: 'fm-list' });
@@ -2241,7 +2472,7 @@ function renderFiles(serverId: string): HTMLElement {
       const inp = upInput as HTMLInputElement;
       const f = inp.files?.[0];
       if (!f) return;
-      try { await api.fileUpload(serverId, joinPath(cwd, f.name), f); toast(`Uploaded ${f.name}`); await load(cwd); }
+      try { await ops.upload(joinPath(cwd, f.name), f); toast(`Uploaded ${f.name}`); await load(cwd); }
       catch (e) { toast(fail(e), 'err'); }
       inp.value = '';
     },
@@ -2272,7 +2503,7 @@ function renderFiles(serverId: string): HTMLElement {
     clear(list); msg.textContent = ''; msg.className = 'fm-msg';
     list.append(el('div', { class: 'loading blink', style: 'padding:12px 14px' }, 'Loading '));
     try {
-      const r = await api.filesList(serverId, cwd);
+      const r = await ops.list(cwd);
       cwd = r.path; setCrumbs();
       clear(list);
       if (cwd !== '/') list.append(upRow());
@@ -2298,12 +2529,12 @@ function renderFiles(serverId: string): HTMLElement {
 
     const rowEl = el('div', { class: 'fm-row' });
     const actions = el('div', { class: 'fm-actions' },
-      !isDir && el('a', { class: 'btn btn-ghost btn-sm', href: api.fileDownloadUrl(serverId, joinPath(cwd, en.name)), download: en.name, title: 'Download' }, '↓'),
+      !isDir && el('a', { class: 'btn btn-ghost btn-sm', href: ops.downloadUrl(joinPath(cwd, en.name)), download: en.name, title: 'Download' }, '↓'),
       el('button', { class: 'btn btn-ghost btn-sm', onclick: () => startRename(en, rowEl) }, 'Rename'),
       el('button', {
         class: 'btn btn-ghost btn-sm fm-del', onclick: async () => {
           if (!window.confirm(`Delete ${en.name}${isDir ? ' and everything inside it' : ''}? This cannot be undone.`)) return;
-          try { await api.fileDelete(serverId, joinPath(cwd, en.name)); await load(cwd); } catch (e) { toast(fail(e), 'err'); }
+          try { await ops.del(joinPath(cwd, en.name)); await load(cwd); } catch (e) { toast(fail(e), 'err'); }
         },
       }, 'Delete'),
     );
@@ -2316,7 +2547,7 @@ function renderFiles(serverId: string): HTMLElement {
     const commit = async (): Promise<void> => {
       const nv = input.value.trim();
       if (!nv || nv === en.name) return void load(cwd);
-      try { await api.fileRename(serverId, joinPath(cwd, en.name), joinPath(cwd, nv)); await load(cwd); }
+      try { await ops.rename(joinPath(cwd, en.name), joinPath(cwd, nv)); await load(cwd); }
       catch (e) { toast(fail(e), 'err'); void load(cwd); }
     };
     input.addEventListener('keydown', (e: KeyboardEvent) => { if (e.key === 'Enter') { e.preventDefault(); void commit(); } if (e.key === 'Escape') void load(cwd); });
@@ -2331,7 +2562,7 @@ function renderFiles(serverId: string): HTMLElement {
     const commit = async (): Promise<void> => {
       const nv = input.value.trim();
       if (!nv) return void load(cwd);
-      try { await api.fileMkdir(serverId, joinPath(cwd, nv)); await load(cwd); }
+      try { await ops.mkdir(joinPath(cwd, nv)); await load(cwd); }
       catch (e) { toast(fail(e), 'err'); void load(cwd); }
     };
     input.addEventListener('keydown', (e: KeyboardEvent) => { if (e.key === 'Enter') { e.preventDefault(); void commit(); } if (e.key === 'Escape') void load(cwd); });
@@ -2343,11 +2574,11 @@ function renderFiles(serverId: string): HTMLElement {
 
   async function openFile(en: FileEntry): Promise<void> {
     const path = joinPath(cwd, en.name);
-    try { const r = await api.fileRead(serverId, path); showEditor(en.name, r.path, r.content); }
+    try { const r = await ops.read(path); showEditor(en.name, r.path, r.content); }
     catch (e) {
       if (e instanceof ApiError && (e.status === 415 || e.status === 413)) {
         toast('Binary or large file — downloading instead.');
-        window.location.href = api.fileDownloadUrl(serverId, path);
+        window.location.href = ops.downloadUrl(path);
       } else toast(fail(e), 'err');
     }
   }
@@ -2358,7 +2589,7 @@ function renderFiles(serverId: string): HTMLElement {
     const save = el('button', { class: 'btn btn-portal btn-sm' }, 'Save') as HTMLButtonElement;
     save.addEventListener('click', async () => {
       save.classList.add('is-disabled'); save.textContent = 'Saving…';
-      try { await api.fileWrite(serverId, path, ta.value); toast(`Saved ${name}`); await load(cwd); }
+      try { await ops.write(path, ta.value); toast(`Saved ${name}`); await load(cwd); }
       catch (e) { toast(fail(e), 'err'); save.classList.remove('is-disabled'); save.textContent = 'Save'; }
     });
     const close = el('button', { class: 'btn btn-ghost btn-sm', onclick: () => void load(cwd) }, 'Close');
@@ -2370,7 +2601,7 @@ function renderFiles(serverId: string): HTMLElement {
   void load('/');
 
   return el('div', { class: 'entry fm' },
-    el('div', { class: 'card-head' }, el('span', { class: 'k' }, 'Files'), el('span', { class: 'k t-mute' }, 'world · configs · plugins')),
+    el('div', { class: 'card-head' }, el('span', { class: 'k' }, 'Files'), el('span', { class: 'k t-mute' }, subtitle)),
     el('div', { class: 'fm-bar' }, crumbs, tools),
     body, msg, upInput,
   );

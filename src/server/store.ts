@@ -26,6 +26,12 @@ export interface User {
   // How many servers this account may create. Absent means the plan default
   // (LIMITS.defaultServersPerUser); an admin raises it per account.
   serverLimit?: number;
+  // The Minecraft account this panel account is linked to (set with a one-time
+  // /link code in-game). Once linked, the player can control their own servers
+  // from anywhere on the network (/start, /stop, /restart). mcUuid is stored
+  // undashed; mcName is the last name we saw for it.
+  mcUuid?: string;
+  mcName?: string;
 }
 
 // One movement of credits — a grant from an admin or a charge for a running
@@ -227,6 +233,14 @@ export const store = {
   },
   userById(id: string): User | undefined {
     return db.users[id];
+  },
+  // The account linked to a Minecraft identity: by UUID first (stable), then by the
+  // last-seen name as a fallback. UUIDs are compared undashed.
+  userByMc(uuid: string, name?: string): User | undefined {
+    const u = uuid.replace(/-/g, '').toLowerCase();
+    const n = (name ?? '').toLowerCase();
+    return Object.values(db.users).find((x) => (x.mcUuid && x.mcUuid.replace(/-/g, '').toLowerCase() === u))
+        ?? (n ? Object.values(db.users).find((x) => (x.mcName ?? '').toLowerCase() === n && !!x.mcUuid) : undefined);
   },
   addUser(u: User): void {
     db.users[u.id] = u;

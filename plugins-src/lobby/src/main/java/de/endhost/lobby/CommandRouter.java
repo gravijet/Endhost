@@ -50,6 +50,7 @@ final class CommandRouter implements CommandExecutor {
             case "vanish" -> vanish(sender);
             case "clearchat" -> clearchat(sender);
             case "lobbyreload" -> reload(sender);
+            case "help", "ehhelp" -> help(sender);
             default -> { return false; }
         }
         return true;
@@ -101,6 +102,38 @@ final class CommandRouter implements CommandExecutor {
         } else { msg(sender, "&7Usage: &f/rank <player>"); return; }
         RankModel.Rank r = plugin.ranks().rankOf(target);
         msg(sender, "&7" + target.getName() + "'s rank: " + r.color + r.name + " &8(weight " + r.weight + ")");
+    }
+
+    /** The in-game command reference. Everyone sees the player commands; staff also see the
+     *  network-owner and staff tools, so the list matches what the reader can actually run. */
+    private void help(CommandSender sender) {
+        boolean staff = sender instanceof Player p && plugin.ranks().isStaff(p);
+        msg(sender, "&8&m                                        ");
+        msg(sender, "&b&lGRAVIJET &8» &7Commands");
+        msg(sender, " ");
+        msg(sender, "&f/help &8– &7this list");
+        msg(sender, "&f/spawn &8· &f/hub &8· &f/lobby &8– &7back to the hub");
+        msg(sender, "&f/servers &8– &7open the server selector");
+        msg(sender, "&f/players &8– &7show or hide other players");
+        msg(sender, "&f/rank &8[player] &8– &7see a rank");
+        msg(sender, " ");
+        msg(sender, "&7&oManage your own servers &8(link once at example.invalid):");
+        msg(sender, "&f/link &8<code> &8– &7link your Minecraft account");
+        msg(sender, "&f/myservers &8– &7list your servers");
+        msg(sender, "&f/start &8· &f/stop &8· &f/restart &8<server> &8– &7control a server you own");
+        if (staff) {
+            msg(sender, " ");
+            msg(sender, "&c&oStaff tools:");
+            msg(sender, "&f/gm &8· &f/gmc &8· &f/gms &8· &f/gma &8· &f/gmsp &8[player] &8– &7game mode");
+            msg(sender, "&f/fly &8· &f/speed &8<1-10> &8· &f/heal &8· &f/feed &8· &f/vanish");
+            msg(sender, "&f/tp &8· &f/tphere &8<player> &8– &7teleport");
+            msg(sender, "&f/day &8· &f/night &8– &7set the hub time");
+            msg(sender, "&f/broadcast &8<msg> &8· &f/clearchat");
+            msg(sender, "&f/setspawn &8– &7set the hub spawn to where you stand");
+            msg(sender, "&f/lobbyreload &8– &7reload config, ranks and the server list");
+            msg(sender, "&f/maintenance &8[on|off] &8– &7network maintenance &8(on the proxy)");
+        }
+        msg(sender, "&8&m                                        ");
     }
 
     // ---- admin commands ----
