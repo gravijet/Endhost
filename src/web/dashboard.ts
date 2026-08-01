@@ -140,12 +140,14 @@ async function showApp(): Promise<void> {
     el('div', { class: 'side-title' }, 'Your servers'),
     sideList,
     el('div', { class: 'side-nav' },
-      navLink('network', '#/network', '⬡ Network'),
-      ...(me?.admin ? [navLink('proxy', '#/proxy/console', '⇄ Proxy')] : []),
-      navLink('docs', '#/docs', '❓ Docs'),
-      navLink('billing', '#/billing', '◈ Guthaben'),
-      navLink('account', '#/account', '☰ Account'),
-      ...(me?.admin ? [navLink('admin', '#/admin/accounts', '⚙ Admin')] : []),
+      el('div', { class: 'side-group' }, 'Network'),
+      navLink('network', '#/network', '⬡', 'Network'),
+      ...(me?.admin ? [navLink('proxy', '#/proxy/console', '⇄', 'Proxy')] : []),
+      el('div', { class: 'side-group' }, 'Your account'),
+      navLink('billing', '#/billing', '◈', 'Guthaben'),
+      navLink('account', '#/account', '☰', 'Account'),
+      navLink('docs', '#/docs', '?', 'Docs & commands'),
+      ...(me?.admin ? [el('div', { class: 'side-group' }, 'Staff'), navLink('admin', '#/admin/accounts', '⚙', 'Admin')] : []),
     ),
     sideFoot,
   );
@@ -163,8 +165,9 @@ async function showApp(): Promise<void> {
   }
 }
 
-function navLink(kind: string, href: string, label: string): HTMLElement {
-  return el('a', { class: 'side-nav-item', 'data-nav': kind, href, onclick: () => sound.click() }, label);
+function navLink(kind: string, href: string, glyph: string, label: string): HTMLElement {
+  return el('a', { class: 'side-nav-item', 'data-nav': kind, href, onclick: () => sound.click() },
+    el('span', { class: 'gl' }, glyph), el('span', { class: 'lbl' }, label));
 }
 
 function buildFoot(): void {
@@ -747,9 +750,10 @@ function buildNetworkSettings(container: HTMLElement): void {
 // The Velocity proxy managed like any other server: its live console, its whole file tree, and
 // its power/network settings. Admin only — it fronts the entire host.
 function proxySubnav(section: ProxySection): HTMLElement {
-  const item = (id: ProxySection, label: string) =>
-    el('a', { class: 'sv-nav-item' + (section === id ? ' active' : ''), href: `#/proxy/${id}`, onclick: () => sound.click() }, label);
-  return el('div', { class: 'sv-nav' }, item('console', 'Console'), item('files', 'Files'), item('settings', 'Settings'));
+  const item = (id: ProxySection, glyph: string, label: string) =>
+    el('a', { class: 'sv-nav-item' + (section === id ? ' active' : ''), href: `#/proxy/${id}`, onclick: () => sound.click() },
+      el('span', { class: 'gl' }, glyph), el('span', { class: 'lbl' }, label));
+  return el('div', { class: 'sv-nav' }, item('console', '▸', 'Console'), item('files', '▤', 'Files'), item('settings', '⚙', 'Settings'));
 }
 
 // The proxy's real Velocity terminal, embedded in the page: docker logs streamed in, commands
@@ -874,23 +878,23 @@ function renderDocs(): HTMLElement {
 }
 
 // ------------------------------------------------------------------ server view
-interface NavDef { id: ServerSection; label: string; }
+interface NavDef { id: ServerSection; label: string; glyph: string; }
 
 function serverSections(s: ServerSummary): NavDef[] {
   const hasMarket = s.kind === 'plugins' || s.kind === 'mods';
   const marketLabel = s.kind === 'mods' ? 'Mods' : 'Plugins';
   const defs: NavDef[] = [
-    { id: 'overview', label: 'Overview' },
-    { id: 'console', label: 'Console' },
-    { id: 'players', label: 'Players' },
-    { id: 'world', label: 'World' },
-    { id: 'files', label: 'Files' },
-    ...(hasMarket ? [{ id: 'plugins' as ServerSection, label: marketLabel }] : []),
-    { id: 'backups', label: 'Backups' },
-    { id: 'schedule', label: 'Schedule' },
-    { id: 'network', label: 'Address' },
-    { id: 'access', label: 'Access' },
-    { id: 'settings', label: 'Settings' },
+    { id: 'overview', label: 'Overview', glyph: '⬡' },
+    { id: 'console', label: 'Console', glyph: '▸' },
+    { id: 'players', label: 'Players', glyph: '☻' },
+    { id: 'world', label: 'World', glyph: '◍' },
+    { id: 'files', label: 'Files', glyph: '▤' },
+    ...(hasMarket ? [{ id: 'plugins' as ServerSection, label: marketLabel, glyph: '⊞' }] : []),
+    { id: 'backups', label: 'Backups', glyph: '⧉' },
+    { id: 'schedule', label: 'Schedule', glyph: '◷' },
+    { id: 'network', label: 'Address', glyph: '⌂' },
+    { id: 'access', label: 'Access', glyph: '⇄' },
+    { id: 'settings', label: 'Settings', glyph: '⚙' },
   ];
   return defs;
 }
@@ -926,14 +930,30 @@ function renderServer(summary: ServerSummary, section: ServerSection): HTMLEleme
   const pill = el('span', { class: 'state-pill' });
   const controls = el('div', { class: 'sv-controls' });
 
+  const copyAddr = async (e: Event): Promise<void> => {
+    try { await navigator.clipboard.writeText(summary.address); const b = e.currentTarget as HTMLElement; const t = b.textContent; b.textContent = 'copied ✓'; setTimeout(() => (b.textContent = t), 1200); }
+    catch { toast('Copy failed', 'err'); }
+  };
   const head = el('div', { class: 'sv-head' },
-    el('div', { class: 'sv-id' }, el('h2', {}, summary.name, pill), el('div', { class: 'sv-meta t-mute' }, `${summary.softwareLabel} · Minecraft ${summary.version}`)),
-    controls,
+    el('div', { class: 'sv-id' },
+      el('h2', {}, summary.name, pill),
+      el('div', { class: 'sv-meta t-mute' }, `${summary.softwareLabel} · Minecraft ${summary.version}`),
+      el('div', { class: 'sv-addr' },
+        el('span', { class: 'sv-addr-k t-mute' }, 'Join'),
+        el('code', {}, summary.address),
+        el('button', { class: 'btn btn-ghost btn-xs', onclick: copyAddr }, 'copy'),
+      ),
+    ),
+    el('div', { class: 'sv-controls-wrap' },
+      el('div', { class: 'sv-controls-label label' }, 'Power'),
+      controls,
+    ),
   );
 
   const nav = el('div', { class: 'sv-nav' });
   serverSections(summary).forEach((d) => nav.append(
-    el('a', { class: 'sv-nav-item' + (d.id === section ? ' active' : ''), href: serverHash(summary.id, d.id), 'data-sec': d.id, onclick: () => sound.click() }, d.label),
+    el('a', { class: 'sv-nav-item' + (d.id === section ? ' active' : ''), href: serverHash(summary.id, d.id), 'data-sec': d.id, onclick: () => sound.click() },
+      el('span', { class: 'gl' }, d.glyph), el('span', { class: 'lbl' }, d.label)),
   ));
 
   // ---- the section body, plus any live hooks it needs
@@ -976,9 +996,9 @@ function renderServer(summary: ServerSummary, section: ServerSection): HTMLEleme
 
     clear(controls);
     if (st.running) {
-      controls.append(powerBtn('Restart', 'btn-sm', () => api.restart(summary.id)), powerBtn('Stop', 'btn-sm btn-ghost', () => api.stop(summary.id)));
+      controls.append(powerBtn('↻ Restart', '', () => api.restart(summary.id)), powerBtn('■ Stop', 'btn-ghost', () => api.stop(summary.id)));
     } else {
-      controls.append(powerBtn('Start', 'btn-sm btn-portal', () => api.start(summary.id)));
+      controls.append(powerBtn('▶ Start', 'btn-portal', () => api.start(summary.id)));
     }
     const aoOn = d.alwaysOn;
     controls.append(el('button', {
@@ -1961,10 +1981,13 @@ function linkMcCard(): HTMLElement {
 
 // ------------------------------------------------------------------- admin
 function renderAdmin(section: 'accounts' | 'servers' | 'ranks'): HTMLElement {
+  const anav = (id: string, glyph: string, label: string) =>
+    el('a', { class: 'sv-nav-item' + (section === id ? ' active' : ''), href: `#/admin/${id}`, onclick: () => sound.click() },
+      el('span', { class: 'gl' }, glyph), el('span', { class: 'lbl' }, label));
   const nav = el('div', { class: 'sv-nav' },
-    el('a', { class: 'sv-nav-item' + (section === 'accounts' ? ' active' : ''), href: '#/admin/accounts', onclick: () => sound.click() }, 'Accounts'),
-    el('a', { class: 'sv-nav-item' + (section === 'servers' ? ' active' : ''), href: '#/admin/servers', onclick: () => sound.click() }, 'Servers'),
-    el('a', { class: 'sv-nav-item' + (section === 'ranks' ? ' active' : ''), href: '#/admin/ranks', onclick: () => sound.click() }, 'Ranks'),
+    anav('accounts', '☰', 'Accounts'),
+    anav('servers', '▦', 'Servers'),
+    anav('ranks', '✦', 'Ranks'),
   );
   const sub = section === 'servers'
     ? 'Every server on the host — stop or delete any of them.'
