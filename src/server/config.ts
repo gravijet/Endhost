@@ -191,6 +191,35 @@ export const NETWORK_ICONS = [
 ];
 export const DEFAULT_ICONS = ['grass_block', 'diamond_block', 'emerald_block', 'gold_block', 'end_stone', 'purpur_block', 'nether_star', 'ender_eye', 'diamond_ore', 'glowstone'];
 
+// The premium cosmetic tier: rarer, flashier item icons a player buys once with
+// Guthaben and then keeps forever, usable on ANY server they own (the unlock is on
+// the account, not the server — see User.unlockedIcons). Each has a matching sprite
+// at public/assets/img/items/<id>.png (scripts/gen-items.py, our own pixel art). The
+// price is a one-time charge in credits; there is no recurring cost, so nothing here
+// grows the host's footprint — it is pure cosmetics.
+export interface PremiumIcon { id: string; price: number; label: string; }
+export const PREMIUM_ICONS: PremiumIcon[] = [
+  { id: 'shulker_box',            price: 45,  label: 'Shulker Box' },
+  { id: 'enchanted_book',         price: 50,  label: 'Enchanted Book' },
+  { id: 'beacon',                 price: 60,  label: 'Beacon' },
+  { id: 'netherite_sword',        price: 70,  label: 'Netherite Sword' },
+  { id: 'heart_of_the_sea',       price: 80,  label: 'Heart of the Sea' },
+  { id: 'trident',                price: 85,  label: 'Trident' },
+  { id: 'enchanted_golden_apple', price: 90,  label: 'Enchanted Golden Apple' },
+  { id: 'end_crystal',            price: 100, label: 'End Crystal' },
+  { id: 'totem_of_undying',       price: 120, label: 'Totem of Undying' },
+  { id: 'elytra',                 price: 140, label: 'Elytra' },
+  { id: 'dragon_egg',             price: 150, label: 'Dragon Egg' },
+];
+export const PREMIUM_ICON_IDS = PREMIUM_ICONS.map((p) => p.id);
+
+// Every icon id the panel recognises — the free set plus the premium set. Icon
+// changes are validated against this; premium ids additionally require the account
+// to own them (store.ownsIcon).
+export const ALL_ICON_IDS = [...NETWORK_ICONS, ...PREMIUM_ICON_IDS];
+export function isPremiumIcon(id: string): boolean { return PREMIUM_ICON_IDS.includes(id); }
+export function premiumIcon(id: string): PremiumIcon | undefined { return PREMIUM_ICONS.find((p) => p.id === id); }
+
 // The plugin/mod marketplace is Modrinth (labrinth API v2) — no key needed, just
 // a courteous User-Agent. We only ever fetch its search/version JSON and download
 // the primary jar it names, into the server's own plugins/ or mods/ folder, after

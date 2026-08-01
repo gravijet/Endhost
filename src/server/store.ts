@@ -32,6 +32,10 @@ export interface User {
   // undashed; mcName is the last name we saw for it.
   mcUuid?: string;
   mcName?: string;
+  // Premium selector icons this account has bought (config.PREMIUM_ICONS ids). The
+  // unlock lives on the account, so once bought an icon can dress ANY server the
+  // account owns, forever. Absent means none bought yet.
+  unlockedIcons?: string[];
 }
 
 // One movement of credits — a grant from an admin or a charge for a running
@@ -393,6 +397,21 @@ export const store = {
   },
   ledgerOf(userId: string, limit = 50): Tx[] {
     return db.ledger.filter((t) => t.userId === userId).slice(-limit).reverse();
+  },
+
+  // Premium selector icons the account has unlocked (bought). The unlock is
+  // permanent and account-wide.
+  unlockedIconsOf(userId: string): string[] {
+    return db.users[userId]?.unlockedIcons ?? [];
+  },
+  ownsIcon(userId: string, icon: string): boolean {
+    return (db.users[userId]?.unlockedIcons ?? []).includes(icon);
+  },
+  unlockIcon(userId: string, icon: string): void {
+    const u = db.users[userId];
+    if (!u) return;
+    const owned = u.unlockedIcons ?? [];
+    if (!owned.includes(icon)) { u.unlockedIcons = [...owned, icon]; persist(); }
   },
 
   // network (the one host-wide Velocity proxy; the container is owned by network.ts)

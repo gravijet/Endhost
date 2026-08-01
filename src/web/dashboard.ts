@@ -1,7 +1,7 @@
 import { wireClicks, sound } from './sound.js';
 import { el, $, clear, toast } from './dom.js';
 import { motdToHtml, fmtBytes, ago } from './mc.js';
-import { api, ApiError, type Meta, type ServerDetail, type ServerSummary, type LiveState, type FileEntry, type DirListing, type SftpInfo, type ModHit, type Me, type CreditsInfo, type AdminUser, type AdminServer, type Tx, type Backup, type Roster, type PlayerAction, type WorldInfo, type GameRuleDef, type DomainInfo, type DomainCheck, type MetricsInfo, type SchedulesInfo, type Schedule, type ScheduleActionDef, type NetworkServer, type AdminNetworkServer, type ProxyAction, type MaintenanceInfo, type Rank, type RankAssignment, type RanksInfo } from './api.js';
+import { api, ApiError, type Meta, type PremiumIcon, type ServerDetail, type ServerSummary, type LiveState, type FileEntry, type DirListing, type SftpInfo, type ModHit, type Me, type CreditsInfo, type AdminUser, type AdminServer, type Tx, type Backup, type Roster, type PlayerAction, type WorldInfo, type GameRuleDef, type DomainInfo, type DomainCheck, type MetricsInfo, type SchedulesInfo, type Schedule, type ScheduleActionDef, type NetworkServer, type AdminNetworkServer, type ProxyAction, type MaintenanceInfo, type Rank, type RankAssignment, type RanksInfo } from './api.js';
 
 wireClicks();
 
@@ -20,8 +20,11 @@ function fail(e: unknown): string { return e instanceof ApiError ? e.message : '
 // --------------------------------------------------------------- routing
 // Every section is its own URL, so the browser's Back/Forward move between them
 // and each page is a real, bookmarkable place — nothing is a hidden tab.
-type ServerSection = 'overview' | 'console' | 'players' | 'world' | 'files' | 'plugins' | 'backups' | 'schedule' | 'network' | 'access' | 'settings';
-const SERVER_SECTIONS: ServerSection[] = ['overview', 'console', 'players', 'world', 'files', 'plugins', 'backups', 'schedule', 'network', 'access', 'settings'];
+type ServerSection = 'overview' | 'console' | 'players' | 'world' | 'files' | 'plugins' | 'backups' | 'schedule' | 'network' | 'access' | 'analytics' | 'team' | 'alerts' | 'settings';
+const SERVER_SECTIONS: ServerSection[] = ['overview', 'console', 'players', 'world', 'files', 'plugins', 'backups', 'schedule', 'network', 'access', 'analytics', 'team', 'alerts', 'settings'];
+// Sections marked `soon: true` in serverSections() are honestly not built yet — real
+// roadmap surfaces, shown with a "coming soon" body and a small nav badge, never a
+// fake-working page.
 
 type Route =
   | { kind: 'new' }
@@ -30,6 +33,9 @@ type Route =
   | { kind: 'proxy'; section: ProxySection }
   | { kind: 'docs' }
   | { kind: 'billing' }
+  | { kind: 'store' }
+  | { kind: 'stats' }
+  | { kind: 'support' }
   | { kind: 'account' }
   | { kind: 'admin'; section: 'accounts' | 'servers' | 'ranks' };
 
@@ -49,6 +55,9 @@ function parseHash(): Route {
   }
   if (parts[0] === 'docs') return { kind: 'docs' };
   if (parts[0] === 'billing') return { kind: 'billing' };
+  if (parts[0] === 'store') return { kind: 'store' };
+  if (parts[0] === 'stats') return { kind: 'stats' };
+  if (parts[0] === 'support') return { kind: 'support' };
   if (parts[0] === 'account') return { kind: 'account' };
   if (parts[0] === 'admin') return { kind: 'admin', section: parts[1] === 'servers' ? 'servers' : parts[1] === 'ranks' ? 'ranks' : 'accounts' };
   return { kind: 'new' };
@@ -142,11 +151,15 @@ async function showApp(): Promise<void> {
     el('div', { class: 'side-nav' },
       el('div', { class: 'side-group' }, 'Network'),
       navLink('network', '#/network', '⬡', 'Network'),
+      navLink('stats', '#/stats', '▤', 'Leaderboards', true),
       ...(me?.admin ? [navLink('proxy', '#/proxy/console', '⇄', 'Proxy')] : []),
-      el('div', { class: 'side-group' }, 'Your account'),
+      el('div', { class: 'side-group' }, 'Shop'),
+      navLink('store', '#/store', '✦', 'Store'),
       navLink('billing', '#/billing', '◈', 'Guthaben'),
+      el('div', { class: 'side-group' }, 'Your account'),
       navLink('account', '#/account', '☰', 'Account'),
       navLink('docs', '#/docs', '?', 'Docs & commands'),
+      navLink('support', '#/support', '✉', 'Support', true),
       ...(me?.admin ? [el('div', { class: 'side-group' }, 'Staff'), navLink('admin', '#/admin/accounts', '⚙', 'Admin')] : []),
     ),
     sideFoot,
@@ -165,9 +178,10 @@ async function showApp(): Promise<void> {
   }
 }
 
-function navLink(kind: string, href: string, glyph: string, label: string): HTMLElement {
-  return el('a', { class: 'side-nav-item', 'data-nav': kind, href, onclick: () => sound.click() },
-    el('span', { class: 'gl' }, glyph), el('span', { class: 'lbl' }, label));
+function navLink(kind: string, href: string, glyph: string, label: string, soon = false): HTMLElement {
+  return el('a', { class: 'side-nav-item' + (soon ? ' soon' : ''), 'data-nav': kind, href, onclick: () => sound.click() },
+    el('span', { class: 'gl' }, glyph), el('span', { class: 'lbl' }, label),
+    soon ? el('span', { class: 'soon-tag' }, 'soon') : '');
 }
 
 function buildFoot(): void {
@@ -218,7 +232,7 @@ function setDot(id: string, st: LiveState): void { const dot = serverDots.get(id
 
 function updateSideActive(r: Route = parseHash()): void {
   const activeId = r.kind === 'server' ? r.id : null;
-  const navKind = r.kind === 'network' || r.kind === 'proxy' || r.kind === 'docs' || r.kind === 'billing' || r.kind === 'account' || r.kind === 'admin' ? r.kind : null;
+  const navKind = r.kind === 'network' || r.kind === 'proxy' || r.kind === 'docs' || r.kind === 'billing' || r.kind === 'store' || r.kind === 'stats' || r.kind === 'support' || r.kind === 'account' || r.kind === 'admin' ? r.kind : null;
   sideList.querySelectorAll('.srv-item').forEach((n) => n.classList.toggle('active', (n as HTMLElement).dataset.srv === activeId));
   sideNav?.querySelectorAll('.side-nav-item').forEach((n) => n.classList.toggle('active', (n as HTMLElement).dataset.nav === navKind));
 }
@@ -249,6 +263,9 @@ function route(): void {
   else if (r.kind === 'proxy') content.append(renderProxy(r.section));
   else if (r.kind === 'docs') content.append(renderDocs());
   else if (r.kind === 'billing') content.append(renderBilling());
+  else if (r.kind === 'store') content.append(renderStore());
+  else if (r.kind === 'stats') content.append(renderStats());
+  else if (r.kind === 'support') content.append(renderSupport());
   else if (r.kind === 'account') content.append(renderAccount());
   else content.append(renderAdmin(r.section));
 }
@@ -324,7 +341,7 @@ function renderCreate(): HTMLElement {
 // front of the real Velocity proxy with a console into every server.
 
 function itemIcon(icon: string, size = 44): HTMLElement {
-  return el('img', { class: 'mc-item', width: String(size), height: String(size), src: `/assets/img/items/${icon}.png?v=1`, alt: '' });
+  return el('img', { class: 'mc-item', width: String(size), height: String(size), src: `/assets/img/items/${icon}.png?v=2`, alt: '' });
 }
 
 function playerBar(online: number, max: number): HTMLElement {
@@ -398,26 +415,76 @@ function openConsole(title: string, wsPath: string): void {
   setTimeout(() => cmd.focus(), 50);
 }
 
-// A grid of every item a server can wear; clicking one saves it immediately.
+// The human name for an icon id — premium icons carry a real label; free ones just
+// de-underscore.
+function iconLabel(id: string): string {
+  return meta?.premiumIcons?.find((p) => p.id === id)?.label ?? id.replace(/_/g, ' ');
+}
+function premiumOf(id: string): PremiumIcon | undefined { return meta?.premiumIcons?.find((p) => p.id === id); }
+// Owned = a free icon, or a premium one the account has bought.
+function iconOwned(id: string): boolean { return !premiumOf(id) || (me?.unlockedIcons ?? []).includes(id); }
+
+// A grid of every item a server can wear. Free and already-owned icons equip on
+// click; a locked premium icon shows its price and, on click, offers to buy it
+// (unlocking it for every server the account owns) before equipping it.
 function openIconPicker(s: { id: string; name: string; icon: string }, iconWrap: HTMLElement): void {
-  const icons = meta?.itemIcons ?? [];
+  const free = meta?.itemIcons ?? [];
+  const premium = meta?.premiumIcons ?? [];
   const grid = el('div', { class: 'item-picker' });
-  icons.forEach((ic) => {
-    const cell = el('button', { class: 'item-cell' + (ic === s.icon ? ' active' : ''), title: ic.replace(/_/g, ' '),
-      onclick: async () => {
-        try {
-          await api.setIcon(s.id, ic);
-          s.icon = ic;
-          clear(iconWrap); iconWrap.append(itemIcon(ic, 46));
-          grid.querySelectorAll('.item-cell').forEach((c) => c.classList.remove('active'));
-          cell.classList.add('active');
-          toast(`${s.name} now wears ${ic.replace(/_/g, ' ')}`);
-        } catch (e) { toast(fail(e), 'err'); }
-      },
-    }, itemIcon(ic, 40));
-    grid.append(cell);
-  });
-  modal(`Choose ${s.name}'s icon`, grid, { extraClass: 'modal-picker' });
+  const foot = el('div', { class: 'picker-foot' });
+  let closer: (() => void) | null = null;
+
+  async function equip(ic: string, cell: HTMLElement): Promise<void> {
+    try {
+      await api.setIcon(s.id, ic); s.icon = ic;
+      clear(iconWrap); iconWrap.append(itemIcon(ic, 46));
+      grid.querySelectorAll('.item-cell').forEach((c) => c.classList.remove('active'));
+      cell.classList.add('active');
+      toast(`${s.name} now wears ${iconLabel(ic)}`);
+    } catch (e) { toast(fail(e), 'err'); }
+  }
+
+  function askBuy(ic: string, price: number, cell: HTMLElement): void {
+    clear(foot);
+    const bal = me?.credits ?? 0;
+    const can = bal >= price;
+    foot.append(
+      el('span', { class: 'pf-msg' + (can ? '' : ' err') }, can
+        ? `Unlock ${iconLabel(ic)} for ◈ ${price}? It works on all your servers, forever.`
+        : `${iconLabel(ic)} costs ◈ ${price} — you have ◈ ${bal}.`),
+      el('div', { class: 'pf-actions' },
+        can
+          ? el('button', { class: 'btn btn-portal btn-sm', onclick: async (e: Event) => {
+              const b = e.currentTarget as HTMLElement; b.classList.add('is-disabled');
+              try {
+                const r = await api.buyIcon(ic);
+                if (me) me.unlockedIcons = r.unlockedIcons; setBal(r.balance);
+                toast(`Unlocked ${iconLabel(ic)}!`);
+                cell.classList.remove('locked'); cell.querySelector('.cell-price')?.remove();
+                clear(foot); await equip(ic, cell);
+              } catch (err) { toast(fail(err), 'err'); b.classList.remove('is-disabled'); }
+            } }, `Buy ◈ ${price}`)
+          : el('a', { class: 'btn btn-sm', href: '#/billing', onclick: () => closer?.() }, 'Get Guthaben'),
+        el('button', { class: 'btn btn-ghost btn-sm', onclick: () => clear(foot) }, 'Cancel'),
+      ),
+    );
+  }
+
+  function cellFor(ic: string, price?: number): HTMLElement {
+    const owned = iconOwned(ic);
+    const cell: HTMLElement = el('button', {
+      class: 'item-cell' + (ic === s.icon ? ' active' : '') + (owned ? '' : ' locked'),
+      title: iconLabel(ic) + (owned ? '' : ` · ◈ ${price}`),
+      onclick: () => { if (owned) void equip(ic, cell); else askBuy(ic, price ?? 0, cell); },
+    }, itemIcon(ic, 40), owned ? '' : el('span', { class: 'cell-price' }, `◈${price}`));
+    return cell;
+  }
+
+  free.forEach((ic) => grid.append(cellFor(ic)));
+  if (premium.length) grid.append(el('div', { class: 'picker-div' }, 'Premium — unlock with Guthaben'));
+  premium.forEach((p) => grid.append(cellFor(p.id, p.price)));
+
+  closer = modal(`Choose ${s.name}'s icon`, el('div', { class: 'picker-wrap' }, grid, foot), { extraClass: 'modal-picker' }).close;
 }
 
 function syncMine(id: string, listed: boolean): void {
@@ -878,7 +945,7 @@ function renderDocs(): HTMLElement {
 }
 
 // ------------------------------------------------------------------ server view
-interface NavDef { id: ServerSection; label: string; glyph: string; }
+interface NavDef { id: ServerSection; label: string; glyph: string; soon?: boolean; }
 
 function serverSections(s: ServerSummary): NavDef[] {
   const hasMarket = s.kind === 'plugins' || s.kind === 'mods';
@@ -894,6 +961,9 @@ function serverSections(s: ServerSummary): NavDef[] {
     { id: 'schedule', label: 'Schedule', glyph: '◷' },
     { id: 'network', label: 'Address', glyph: '⌂' },
     { id: 'access', label: 'Access', glyph: '⇄' },
+    { id: 'analytics', label: 'Analytics', glyph: '◔', soon: true },
+    { id: 'team', label: 'Team', glyph: '⧉', soon: true },
+    { id: 'alerts', label: 'Alerts', glyph: '⚑', soon: true },
     { id: 'settings', label: 'Settings', glyph: '⚙' },
   ];
   return defs;
@@ -915,6 +985,9 @@ function sectionHead(summary: ServerSummary, section: ServerSection): HTMLElemen
     schedule: { eyebrow: 'Automation', title: 'Schedule',      desc: 'Automated tasks — a nightly restart, a scheduled backup, a timed command. They run on their own.' },
     network:  { eyebrow: 'Connection', title: 'Address',       desc: 'The address players join by, and a custom domain of your own if you want one.' },
     access:   { eyebrow: 'Connection', title: 'Access',        desc: 'SFTP details for moving whole folders with FileZilla, WinSCP or Cyberduck.' },
+    analytics:{ eyebrow: 'Insights',   title: 'Analytics',     desc: 'Player history, tick performance and peak times over the long run — coming soon.' },
+    team:     { eyebrow: 'Access',     title: 'Team',          desc: 'Invite trusted people to co-manage this server, with roles — coming soon.' },
+    alerts:   { eyebrow: 'Automation', title: 'Alerts',        desc: 'Get pinged on Discord or email when this server crashes, fills up or goes quiet — coming soon.' },
     settings: { eyebrow: 'Server',     title: 'Settings',      desc: 'The facts about this server, and the danger zone.' },
   };
   const m = M[section];
@@ -952,8 +1025,9 @@ function renderServer(summary: ServerSummary, section: ServerSection): HTMLEleme
 
   const nav = el('div', { class: 'sv-nav' });
   serverSections(summary).forEach((d) => nav.append(
-    el('a', { class: 'sv-nav-item' + (d.id === section ? ' active' : ''), href: serverHash(summary.id, d.id), 'data-sec': d.id, onclick: () => sound.click() },
-      el('span', { class: 'gl' }, d.glyph), el('span', { class: 'lbl' }, d.label)),
+    el('a', { class: 'sv-nav-item' + (d.id === section ? ' active' : '') + (d.soon ? ' soon' : ''), href: serverHash(summary.id, d.id), 'data-sec': d.id, onclick: () => sound.click() },
+      el('span', { class: 'gl' }, d.glyph), el('span', { class: 'lbl' }, d.label),
+      d.soon ? el('span', { class: 'soon-tag' }, 'soon') : ''),
   ));
 
   // ---- the section body, plus any live hooks it needs
@@ -970,6 +1044,30 @@ function renderServer(summary: ServerSummary, section: ServerSection): HTMLEleme
   else if (section === 'schedule') body = renderSchedule(summary.id);
   else if (section === 'network') body = networkPane(summary);
   else if (section === 'access') body = renderSftp(summary.id);
+  else if (section === 'analytics') body = comingSoon('Deep analytics are coming',
+    'Long-run charts of this server — players over days and weeks, tick performance (TPS/MSPT), memory trends and the times it’s busiest — built from real samples the panel already collects, never guessed.',
+    [
+      ['Player history', 'A graph of concurrent players across days and weeks, not just the last hour.'],
+      ['Tick performance', 'TPS and MSPT over time, so a slow plugin shows up as a real dip.'],
+      ['Peak hours', 'When your server is busiest, so you can time restarts around it.'],
+      ['Resource trends', 'CPU and memory across the long run, alongside the live meters on Overview.'],
+    ]);
+  else if (section === 'team') body = comingSoon('Share this server with your team',
+    'Invite trusted people to help run this server without handing over your account — each with a role that decides what they can touch.',
+    [
+      ['Invites', 'Add someone by email; they manage this server from their own login.'],
+      ['Roles', 'Operator, builder or viewer — scoped to console, files, power and more.'],
+      ['Audit log', 'A record of who did what, so a shared server stays accountable.'],
+      ['Per-server', 'Access is granted one server at a time — never your whole account.'],
+    ]);
+  else if (section === 'alerts') body = comingSoon('Know the moment something happens',
+    'Get a heads-up when this server needs you — a crash, an out-of-memory kill, a full player slot or a long silence — on the channels you actually watch.',
+    [
+      ['Crash & OOM', 'A ping when the server stops unexpectedly or the kernel OOM-kills it.'],
+      ['Capacity', 'A nudge when the server fills up, so you can raise or celebrate it.'],
+      ['Channels', 'Delivered to Discord or email — you choose per alert.'],
+      ['Quiet hours', 'Mute non-urgent alerts overnight so only real emergencies wake you.'],
+    ]);
   else body = settingsPane(summary);
 
   root.append(head, nav, el('div', { class: 'sv-body' }, sectionHead(summary, section), body));
@@ -1211,15 +1309,36 @@ function buildConsole(serverId: string): { node: HTMLElement; connect: () => voi
   const out = el('div', { class: 'console-out mono' });
   const cmd = el('input', { class: 'input', placeholder: 'type a command, e.g. list', autocomplete: 'off' }) as HTMLInputElement;
 
+  // Auto-scroll follows the tail unless the operator turns it off (to read back up);
+  // the filter hides lines that don't match a substring, live, without dropping them.
+  let autoScroll = true;
+  let filterText = '';
+  const matches = (t: string) => !filterText || t.toLowerCase().includes(filterText);
+
   function paint(text: string, cls: string): void {
     const atBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
-    out.append(el('div', { class: cls }, text));
+    out.append(el('div', { class: cls + (matches(text) ? '' : ' hide') }, text));
     while (out.childElementCount > 400) out.firstChild && out.removeChild(out.firstChild);
-    if (atBottom) out.scrollTop = out.scrollHeight;
+    if (autoScroll && atBottom) out.scrollTop = out.scrollHeight;
   }
   function pushLine(text: string, cls = 'l-info', store = true): void {
     if (store) { scroll.push({ cls, text }); while (scroll.length > 400) scroll.shift(); }
     paint(text, cls);
+  }
+  function applyFilter(): void {
+    out.querySelectorAll(':scope > div').forEach((n) => (n as HTMLElement).classList.toggle('hide', !matches(n.textContent || '')));
+    if (autoScroll) out.scrollTop = out.scrollHeight;
+  }
+  function downloadLog(): void {
+    const text = scroll.map((l) => l.text).join('\n') || '[endhost] nothing in the console yet.';
+    const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+    const a = el('a', { href: url, download: `console-${serverId}.log` }) as HTMLAnchorElement;
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  function clearView(): void {
+    scroll.length = 0; clear(out);
+    pushLine('[endhost] cleared the on-screen log — the server’s own log is untouched.', 'l-sys', false);
   }
 
   // replay what we already saw this session
@@ -1242,8 +1361,19 @@ function buildConsole(serverId: string): { node: HTMLElement; connect: () => voi
   const quick = el('div', { class: 'console-quick' }, el('span', { class: 'cq-label' }, 'Quick:'),
     ...quicks.map(([label, c]) => el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => void runCmd(c) }, label)));
 
+  const filterInput = el('input', { class: 'input console-filter', placeholder: '⌕ filter…', autocomplete: 'off', spellcheck: 'false',
+    oninput: (e: Event) => { filterText = (e.currentTarget as HTMLInputElement).value.trim().toLowerCase(); applyFilter(); } }) as HTMLInputElement;
+  const autoBtn = el('button', { class: 'btn btn-ghost btn-xs', type: 'button', title: 'Follow the newest lines',
+    onclick: (e: Event) => { autoScroll = !autoScroll; const b = e.currentTarget as HTMLElement; b.classList.toggle('is-off', !autoScroll); b.textContent = autoScroll ? '↓ Follow' : '↧ Paused'; if (autoScroll) out.scrollTop = out.scrollHeight; } }, '↓ Follow');
+  const tools = el('div', { class: 'console-tools' },
+    filterInput,
+    autoBtn,
+    el('button', { class: 'btn btn-ghost btn-xs', type: 'button', title: 'Download the console log', onclick: downloadLog }, '⭳ Log'),
+    el('button', { class: 'btn btn-ghost btn-xs', type: 'button', title: 'Clear the on-screen log', onclick: clearView }, '✕ Clear'),
+  );
+
   const node = el('div', { class: 'entry console' },
-    el('div', { class: 'console-head' }, el('span', { class: 'k' }, 'Console'), el('span', { class: 'k t-mute' }, 'live log · RCON')),
+    el('div', { class: 'console-head' }, el('span', { class: 'k' }, 'Console'), tools),
     out, quick, form,
   );
 
@@ -1898,6 +2028,130 @@ function ledgerList(ledger: Tx[]): HTMLElement {
     el('span', { class: 'cr-after t-mute' }, `→ ${t.balanceAfter}`),
   )));
   return list;
+}
+
+// ------------------------------------------------------------------- store
+// The cosmetics shop. Premium selector icons are the one thing on sale that is real
+// today: buy once, unlock for every server the account owns, forever. Everything the
+// Store sells is cosmetic — RAM and performance are the same free plan for everyone,
+// so nothing here can grow the host's footprint.
+function renderStore(): HTMLElement {
+  const balNum = el('b', {}, String(me?.credits ?? 0));
+  const balLine = el('div', { class: 'store-bal entry' },
+    el('div', { class: 'store-bal-l' },
+      el('span', { class: 'label' }, 'Your Guthaben'),
+      el('div', { class: 'store-bal-num' }, balNum, el('span', { class: 't-mute sh' }, ' credits')),
+    ),
+    el('div', { class: 'store-bal-r' },
+      el('span', { class: 't-mute sh' }, 'Icons unlock for every server you own'),
+      el('a', { class: 'btn btn-ghost btn-sm', href: '#/billing' }, 'History'),
+    ),
+  );
+
+  const grid = el('div', { class: 'store-grid' });
+  function renderGrid(): void {
+    clear(grid);
+    const list = meta?.premiumIcons ?? [];
+    if (!list.length) { grid.append(el('div', { class: 'entry empty' }, 'The cosmetics shop is warming up — check back soon.')); return; }
+    list.forEach((p) => {
+      const owned = (me?.unlockedIcons ?? []).includes(p.id);
+      const bal = me?.credits ?? 0;
+      const afford = bal >= p.price;
+      const action = owned
+        ? el('span', { class: 'store-owned' }, '✓ Owned')
+        : el('button', { class: 'btn btn-sm ' + (afford ? 'btn-portal' : 'btn-ghost'),
+            onclick: async (e: Event) => {
+              const b = e.currentTarget as HTMLElement;
+              if (!afford) { toast(`Not enough Guthaben — ${p.label} costs ◈ ${p.price}, you have ◈ ${bal}.`, 'err'); return; }
+              b.classList.add('is-disabled');
+              try {
+                const r = await api.buyIcon(p.id);
+                if (me) me.unlockedIcons = r.unlockedIcons; setBal(r.balance);
+                balNum.textContent = String(r.balance);
+                toast(`Unlocked ${p.label}! It's ready on any of your servers.`);
+                renderGrid();
+              } catch (err) { toast(fail(err), 'err'); b.classList.remove('is-disabled'); }
+            } }, `Buy ◈ ${p.price}`);
+      grid.append(el('div', { class: 'store-card entry' + (owned ? ' is-owned' : '') },
+        el('div', { class: 'store-ic slot' }, itemIcon(p.id, 50)),
+        el('div', { class: 'store-name' }, p.label),
+        el('div', { class: 'store-price t-mute sh' }, owned ? 'In your collection' : `◈ ${p.price} · one-time`),
+        action,
+      ));
+    });
+  }
+  renderGrid();
+
+  return el('div', { class: 'page' },
+    pageHead('Store', 'Spend Guthaben on cosmetics. An icon you buy here unlocks for every server you own — permanently. It’s purely cosmetic: everyone runs the same free plan.'),
+    balLine,
+    el('div', { class: 'store-sec-head' },
+      el('span', { class: 'sv-sec-eyebrow' }, 'Cosmetics'),
+      el('h3', {}, 'Selector icons'),
+      el('p', {}, 'Dress your server with a rarer item in the network selector. Bought once, then yours on every server — swap it any time from a server’s Network page or the selector.'),
+    ),
+    grid,
+    el('div', { class: 'store-soon' },
+      el('div', { class: 'label mb' }, 'More cosmetics — coming soon'),
+      el('div', { class: 'soon-grid' },
+        comingSoonCard('Name colours', 'Choose the colour your server’s name glows in the network selector.'),
+        comingSoonCard('Join particles', 'A burst of particles the moment a player first joins your server.'),
+        comingSoonCard('Selector banners', 'A custom banner behind your server’s card in the selector.'),
+        comingSoonCard('Chat tags', 'A cosmetic tag shown beside your name in lobby chat.'),
+      ),
+    ),
+  );
+}
+
+// ------------------------------------------------------ coming-soon surfaces
+// Honest roadmap pages: features that are planned but genuinely not built yet. They
+// never pretend to work — each says plainly what it will do, so a tab is a promise,
+// not a placeholder.
+function comingSoonCard(title: string, desc: string): HTMLElement {
+  return el('div', { class: 'soon-card entry' },
+    el('span', { class: 'soon-badge' }, 'Planned'),
+    el('div', { class: 'soon-title' }, title),
+    el('p', { class: 't-mute sh' }, desc),
+  );
+}
+
+function comingSoon(title: string, lead: string, items: Array<[string, string]>): HTMLElement {
+  return el('div', { class: 'soon-page' },
+    el('div', { class: 'soon-hero entry' },
+      el('span', { class: 'soon-badge big' }, 'Coming soon'),
+      el('h3', {}, title),
+      el('p', { class: 'set-lead t-mute sh' }, lead),
+    ),
+    el('div', { class: 'soon-grid' }, ...items.map(([t, d]) => comingSoonCard(t, d))),
+  );
+}
+
+function renderStats(): HTMLElement {
+  return el('div', { class: 'page' },
+    pageHead('Leaderboards', 'Network-wide stats and rankings — who’s online, the busiest servers, uptime records.'),
+    comingSoon('Network leaderboards are on the way',
+      'A live board of the whole network: the most-played servers, peak player counts, uptime streaks and playtime records — all pulled from real activity, never invented.',
+      [
+        ['Busiest servers', 'A ranking of servers by players online and total playtime this week.'],
+        ['Uptime streaks', 'How long each server has stayed awake without a crash or restart.'],
+        ['Peak concurrency', 'The highest number of players the network has held at once.'],
+        ['Your standing', 'Where your servers sit on the board, updated as people play.'],
+      ]),
+  );
+}
+
+function renderSupport(): HTMLElement {
+  return el('div', { class: 'page' },
+    pageHead('Support', 'Get help with your servers — guides, and a way to reach a human.'),
+    comingSoon('A support desk is coming',
+      'Open a ticket, track its status, and get a real reply. Until it lands, the Docs & commands page covers the common questions, and an admin can help directly.',
+      [
+        ['Tickets', 'Open a support request and follow it from your dashboard.'],
+        ['Guided fixes', 'Step-by-step help for the usual snags — a server that won’t boot, a plugin clash.'],
+        ['Status page', 'A live view of whether the host and network are healthy right now.'],
+        ['Docs', 'In the meantime, the Docs & commands page answers the frequent ones.'],
+      ]),
+  );
 }
 
 // ------------------------------------------------------------------ account

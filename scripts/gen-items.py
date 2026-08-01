@@ -28,6 +28,19 @@ def A(h, a=255):
 def shade(c, m):
     return (min(255,int(c[0]*m)), min(255,int(c[1]*m)), min(255,int(c[2]*m)), c[3])
 
+# A 1px dark outline around whatever is already drawn. Reads a SNAPSHOT of which
+# pixels are opaque first, then paints the rim — writing straight back into px in
+# one pass makes each new rim pixel seed its own right/down neighbour and floods
+# the lower-right quadrant (a bug the dark panel bg used to hide).
+def add_rim(img, rim):
+    px = img.load()
+    filled = [[px[x, y][3] > 0 for x in range(N)] for y in range(N)]
+    for y in range(1, N - 1):
+        for x in range(1, N - 1):
+            if not filled[y][x] and (filled[y][x-1] or filled[y][x+1] or filled[y-1][x] or filled[y+1][x]):
+                px[x, y] = rim
+    return img
+
 # ---------------------------------------------------------------- block faces
 # A face is a 16x16 grid of RGBA. Most are a base colour broken by a little
 # per-texel noise; a few carry structure (planks, bricks, a furnace mouth).
@@ -250,12 +263,7 @@ def gem(main, seed):
     for (gx,gy) in [(26,18),(27,18),(26,19),(24,22)]:
         px[gx,gy] = gl
     # outline pass (dark rim)
-    rim = shade(b,0.45)
-    for y in range(1,N-1):
-        for x in range(1,N-1):
-            if px[x,y][3]==0:
-                if px[x-1,y][3] or px[x+1,y][3] or px[x,y-1][3] or px[x,y+1][3]:
-                    px[x,y] = rim
+    add_rim(img, shade(b, 0.45))
     return img
 
 def ingot(main, seed):
@@ -281,10 +289,7 @@ def ingot(main, seed):
         for x in range(20,44):
             if px[x,y][3]: px[x,y] = lo if (x-20+y)%7<2 else b
     # rim
-    for y in range(1,N-1):
-        for x in range(1,N-1):
-            if px[x,y][3]==0 and (px[x-1,y][3] or px[x+1,y][3] or px[x,y-1][3] or px[x,y+1][3]):
-                px[x,y] = rim
+    add_rim(img, rim)
     return img
 
 def nether_star():
@@ -303,10 +308,7 @@ def nether_star():
                 px[x,y] = core if d<7 else (mid if d<14 else edge)
     # dark rim
     rim = A("#7a6a2a")
-    for y in range(1,N-1):
-        for x in range(1,N-1):
-            if px[x,y][3]==0 and (px[x-1,y][3] or px[x+1,y][3] or px[x,y-1][3] or px[x,y+1][3]):
-                px[x,y] = rim
+    add_rim(img, rim)
     return img
 
 def ender_eye():
@@ -332,15 +334,12 @@ def ender_eye():
         px[cx-1,y] = A("#3a1a52"); px[cx,y] = A("#241033")
     # rim
     rim = A("#155a3f")
-    for y in range(1,N-1):
-        for x in range(1,N-1):
-            if px[x,y][3]==0 and (px[x-1,y][3] or px[x+1,y][3] or px[x,y-1][3] or px[x,y+1][3]):
-                px[x,y] = rim
+    add_rim(img, rim)
     return img
 
-def diamond_sword():
-    # 16px sprite, classic diagonal sword, scaled x4
-    B='#5ef2e8'; b='#31c7bd'; d='#1c7a73'; H='#6d4f28'; h='#4a331a'; G='#c9c3ba'; k='#2b2b2b'
+def sword_sprite(B, b, d, G='#c9c3ba', H='#6d4f28', h='#4a331a', k='#2b2b2b'):
+    # 16px sprite, classic diagonal sword, scaled x4. Blade = B/b/d (bright/base/dark),
+    # G = guard/pommel metal, H/h = hilt wrap. Reused for every metal blade.
     pal = {'B':A(B),'b':A(b),'d':A(d),'H':A(H),'h':A(h),'G':A(G),'k':A(k)}
     rows = [
         "............kBk.",
@@ -359,6 +358,217 @@ def diamond_sword():
         ".kHhk..........",
         "..kk...........",
         "...............",
+    ]
+    return sprite(rows, pal)
+
+def diamond_sword():
+    return sword_sprite('#5ef2e8', '#31c7bd', '#1c7a73')
+
+# ---------------------------------------------------------------- premium icons
+# The cosmetic tier a server pays Guthaben for and keeps forever. Same pixel
+# grammar as the free set — isometric cubes and flat sprites — just the rarer,
+# flashier motifs. Kept deterministic so the art is stable build-to-build.
+
+def beacon_face(seed, core=False):
+    b = A("#39b0a8")  # teal beacon glass
+    px = noisy(b, [A("#2c8a84"), A("#5fd0c8"), A("#20706b")], seed)
+    frame = A("#173f3c")
+    for i in range(FT):
+        px[0][i] = frame; px[FT-1][i] = frame; px[i][0] = frame; px[i][FT-1] = frame
+    if core:
+        c = A("#ffffff"); c2 = A("#d6fffb")
+        for y in range(5, 11):
+            for x in range(5, 11):
+                px[y][x] = c if (x + y) % 2 else c2
+        for y in range(6, 10):
+            for x in range(6, 10):
+                px[y][x] = A("#eafffd")
+    return px
+
+def shulker_face(seed, top=False):
+    b = A("#96599c")
+    px = noisy(b, [A("#7e4784"), A("#b681bb")], seed)
+    lid = A("#6b3a71")
+    if top:
+        for i in range(FT):
+            px[0][i] = lid; px[FT-1][i] = lid; px[i][0] = lid; px[i][FT-1] = lid
+        for y in range(5, 11):
+            for x in range(5, 11):
+                px[y][x] = A("#caa0cf")
+        for x in range(6, 10):
+            px[6][x] = A("#8a4f90")
+    else:
+        for x in range(FT):
+            px[0][x] = A("#b681bb"); px[4][x] = lid
+    return px
+
+def dragon_egg():
+    img = canvas(); px = img.load()
+    cx, cy = 32, 35
+    b = A("#241033"); hi = A("#3a1a52"); lo = A("#150a1f"); spk = A("#7a3fb0")
+    for y in range(N):
+        for x in range(N):
+            rw = 14 + int(5 * ((y - 10) / 48.0)); ry = 25
+            nx = (x - cx) / rw; ny = (y - cy) / ry
+            if nx * nx + ny * ny <= 1.0:
+                r = R(x * 71 + y * 13)
+                c = b
+                if x - cx < -3 and y - cy < -4: c = hi
+                elif x - cx > 5 or y - cy > 9: c = lo
+                if r.n() % 13 == 0: c = spk
+                px[x, y] = c
+    for (gx, gy) in [(25, 20), (26, 20), (25, 21), (24, 22)]:
+        px[gx, gy] = A("#caa0cf")
+    rim = A("#0b0412")
+    add_rim(img, rim)
+    return img
+
+def apple_enchanted(seed):
+    img = apple("#f4cf45", seed)
+    px = img.load()
+    ench = A("#c46bff"); ench2 = A("#e2b3ff")
+    for (gx, gy) in [(19, 30), (45, 35), (38, 46), (22, 44), (43, 24), (26, 22)]:
+        if 0 <= gx < N and 0 <= gy < N and px[gx, gy][3]:
+            px[gx, gy] = ench
+    for (gx, gy) in [(20, 31), (44, 36), (23, 45)]:
+        if 0 <= gx < N and 0 <= gy < N and px[gx, gy][3]:
+            px[gx, gy] = ench2
+    return img
+
+def orb(main, glow):
+    img = canvas(); px = img.load()
+    cx, cy = 32, 32
+    b = A(main); hi = shade(b, 1.4); lo = shade(b, 0.6); g = A(glow)
+    for y in range(N):
+        for x in range(N):
+            d = math.hypot(x - cx, y - cy)
+            if d <= 22:
+                if d < 6: c = g
+                elif x - cx < -4 and y - cy < -4: c = hi
+                elif x - cx > 6 or y - cy > 6: c = lo
+                else: c = b
+                px[x, y] = c
+    for (gx, gy) in [(24, 20), (25, 20), (24, 21)]:
+        px[gx, gy] = A("#ffffff")
+    rim = shade(b, 0.4)
+    add_rim(img, rim)
+    return img
+
+def enchanted_book():
+    C='#7a2bbf'; c='#5a1f8f'; P='#f0ead6'; p='#c9c3ba'; g='#f4cf45'; e='#d69bff'; k='#241033'
+    pal = {'C':A(C),'c':A(c),'P':A(P),'p':A(p),'g':A(g),'e':A(e),'k':A(k)}
+    rows = [
+        "................",
+        "..kkkkkkkkk.....",
+        ".kCCCCCCCCkk....",
+        ".kCCCCCCCCCPk...",
+        ".kCCCCCCCCCppk..",
+        ".kCggCCCCCCPpk..",
+        ".kCggCCCCCCppk..",
+        ".kCCCCCCCCCPpk..",
+        ".kCCCCCCCCCppk..",
+        ".kCCCCCCCCCPpk..",
+        ".kCCCCCCCCCppk..",
+        ".kcccccccccPk...",
+        "..kkkkkkkkkk....",
+        "......e.........",
+        "....e...e.......",
+        "................",
+    ]
+    return sprite(rows, pal)
+
+def totem():
+    g='#e8c84a'; G='#c9a52f'; E='#3fbf6a'; e='#2f9a52'; k='#243a24'; w='#7a2b2b'
+    pal = {'g':A(g),'G':A(G),'E':A(E),'e':A(e),'k':A(k),'w':A(w)}
+    rows = [
+        ".....gggg.......",
+        "....gGGGGg......",
+        "....gGkGkg......",
+        "....gGGGGg......",
+        "....gGwwGg......",
+        "...ggGGGGgg.....",
+        "..gEE EEEE EEg..".replace(" ",""),
+        "..gEEEEEEEEEEg..".replace(" ",""),
+        "...eEEEEEEEEe...",
+        "....EEEEEEEE....",
+        ".....EEeeEE.....",
+        ".....Ee..eE.....",
+        ".....E....E.....",
+        "....kE....Ek....",
+        "................",
+        "................",
+    ]
+    # pad/truncate to 16 wide
+    rows = [(r + "." * 16)[:16] for r in rows]
+    return sprite(rows, pal)
+
+def trident():
+    T='#4fe0d6'; t='#2fb0a6'; d='#1c7a73'; k='#123f3b'
+    pal = {'T':A(T),'t':A(t),'d':A(d),'k':A(k)}
+    rows = [
+        "...T...T...T....",
+        "...T...T...T....",
+        "...T...T...T....",
+        "...Tt..T..tT....",
+        "....TttTttT.....",
+        ".....TtTtT......",
+        "......TTT.......",
+        ".......t........",
+        ".......t........",
+        "......dtd.......",
+        ".......t........",
+        ".......t........",
+        ".......t........",
+        "......dtd.......",
+        ".......t........",
+        "................",
+    ]
+    return sprite(rows, pal)
+
+def elytra():
+    G='#8a8f9c'; g='#6b7079'; m='#3a2c40'; k='#2b2b2b'
+    pal = {'G':A(G),'g':A(g),'m':A(m),'k':A(k)}
+    rows = [
+        "................",
+        ".kk........kk...",
+        "kGGk......kGGk..",
+        "kGGGk....kGGGk..",
+        "kGgGGk..kGGgGk..",
+        "kGgGGGkkGGGgGk..".replace("..","."),
+        ".kGgGmmmmGgGk...",
+        "..kGGmmmmGGk....",
+        "...kGmmmmGk.....",
+        "....kmmmmk......",
+        ".....kmmk.......",
+        "......kk........",
+        "................",
+        "................",
+        "................",
+        "................",
+    ]
+    rows = [(r + "." * 16)[:16] for r in rows]
+    return sprite(rows, pal)
+
+def end_crystal():
+    P='#c46bff'; p='#8f3fbf'; o='#ff8a1e'; O='#ffd257'; m='#3a3a3a'; k='#241033'
+    pal = {'P':A(P),'p':A(p),'o':A(o),'O':A(O),'m':A(m),'k':A(k)}
+    rows = [
+        ".......P........",
+        "......PpP.......",
+        ".....Pp.pP......",
+        "....Pp...pP.....",
+        "...Pp..O..pP....",
+        "..Pp..OoO..pP...",
+        "...Pp..O..pP....",
+        "....Pp...pP.....",
+        ".....Pp.pP......",
+        "......PpP.......",
+        ".......P........",
+        "................",
+        "...mmmmmmmm.....",
+        "...mkkkkkkm.....",
+        "...mmmmmmmm.....",
+        "................",
     ]
     return sprite(rows, pal)
 
@@ -400,10 +610,7 @@ def apple(body, seed):
     # glint
     for (gx,gy) in [(24,24),(25,24),(24,25)]: px[gx,gy]=A("#ffffff")
     rim = shade(b,0.4)
-    for y in range(1,N-1):
-        for x in range(1,N-1):
-            if px[x,y][3]==0 and (px[x-1,y][3] or px[x+1,y][3] or px[x,y-1][3] or px[x,y+1][3]):
-                px[x,y] = rim
+    add_rim(img, rim)
     return img
 
 # ---------------------------------------------------------------- catalogue
@@ -446,6 +653,18 @@ def build():
     icons["compass"]      = compass()
     icons["apple"]        = apple("#c0392b", 76)
     icons["golden_apple"] = apple("#f4cf45", 77)
+    # premium tier — bought with Guthaben, unlocked account-wide forever
+    icons["beacon"]        = cube(beacon_face(80, core=True), beacon_face(81), beacon_face(82))
+    icons["shulker_box"]   = cube(shulker_face(83, top=True), shulker_face(84), shulker_face(85))
+    icons["dragon_egg"]    = dragon_egg()
+    icons["enchanted_golden_apple"] = apple_enchanted(88)
+    icons["netherite_sword"] = sword_sprite('#8a7d75', '#5f534d', '#2e2724', G='#8a8f99')
+    icons["heart_of_the_sea"] = orb("#2ea6b8", "#c8f7ff")
+    icons["end_crystal"]   = end_crystal()
+    icons["enchanted_book"] = enchanted_book()
+    icons["totem_of_undying"] = totem()
+    icons["trident"]       = trident()
+    icons["elytra"]        = elytra()
     return icons
 
 if __name__ == "__main__":
@@ -453,10 +672,12 @@ if __name__ == "__main__":
     for name, img in icons.items():
         img.save(os.path.join(OUT, name + ".png"))
     print(f"wrote {len(icons)} item icons to {OUT}")
-    # montage for review
-    cols = 8; rows = (len(icons)+cols-1)//cols
-    sheet = Image.new("RGBA", (cols*N, rows*N), (18,16,31,255))
-    for i,(name,img) in enumerate(icons.items()):
-        sheet.alpha_composite(img, ((i%cols)*N, (i//cols)*N))
-    sheet.save(os.path.join(os.path.dirname(__file__), "..", "scratchpad", "items_sheet.png"))
+    # montage for review — only if a scratchpad dir exists to receive it
+    scratch = os.path.join(os.path.dirname(__file__), "..", "scratchpad")
+    if os.path.isdir(scratch):
+        cols = 8; rows = (len(icons)+cols-1)//cols
+        sheet = Image.new("RGBA", (cols*N, rows*N), (18,16,31,255))
+        for i,(name,img) in enumerate(icons.items()):
+            sheet.alpha_composite(img, ((i%cols)*N, (i//cols)*N))
+        sheet.save(os.path.join(scratch, "items_sheet.png"))
     print("catalogue:", ", ".join(icons.keys()))

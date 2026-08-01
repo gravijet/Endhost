@@ -4,7 +4,8 @@
 
 export interface Plan { id: string; name: string; ramMB: number; heapMB: number; containerMB: number; cpus: number; maxPlayers: number; }
 export interface SoftwareOpt { id: string; label: string; kind: 'plugins' | 'mods' | 'vanilla'; note: string; minVersion: string; versions: string[]; }
-export interface Meta { versions: string[]; defaultVersion: string; defaultSoftware: string; software: SoftwareOpt[]; plan: Plan; joinHost: string; itemIcons: string[]; }
+export interface PremiumIcon { id: string; price: number; label: string; }
+export interface Meta { versions: string[]; defaultVersion: string; defaultSoftware: string; software: SoftwareOpt[]; plan: Plan; joinHost: string; itemIcons: string[]; premiumIcons: PremiumIcon[]; }
 export interface Capacity { running: number; maxConcurrent: number; total: number; maxTotal: number; accepting: boolean; }
 
 export interface ServerSummary {
@@ -55,7 +56,7 @@ export interface MaintenanceInfo {
   runningServers: number;
 }
 
-export interface Me { email: string; credits: number; admin: boolean; serverLimit: number; serverCount: number; mcName: string | null; mcLinked: boolean; }
+export interface Me { email: string; credits: number; admin: boolean; serverLimit: number; serverCount: number; mcName: string | null; mcLinked: boolean; unlockedIcons: string[]; }
 export interface Tx { id: string; userId: string; delta: number; reason: string; at: number; balanceAfter: number; }
 export interface CreditsInfo { balance: number; alwaysOnPerHour: number; ledger: Tx[]; }
 export interface AdminUser { id: string; email: string; credits: number; admin: boolean; createdAt: number; servers: number; serverLimit: number; }
@@ -210,6 +211,7 @@ export const api = {
   // ---- network / server selector ----
   network: () => req<NetworkInfo>('GET', '/api/network'),
   setIcon: (id: string, icon: string) => req<{ ok: true; icon: string }>('PUT', `/api/servers/${id}/icon`, { icon }),
+  buyIcon: (icon: string) => req<{ ok: true; icon?: string; price?: number; alreadyOwned?: boolean; balance: number; unlockedIcons: string[] }>('POST', '/api/icons/buy', { icon }),
   setListed: (id: string, listed: boolean) => req<{ ok: true; listed: boolean }>('POST', `/api/servers/${id}/listed`, { listed }),
   setLobbyStartable: (id: string, on: boolean) => req<{ ok: true; lobbyStartable: boolean }>('POST', `/api/servers/${id}/lobby-startable`, { on }),
   adminNetwork: () => req<AdminNetworkInfo>('GET', '/api/admin/network'),

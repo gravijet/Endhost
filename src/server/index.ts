@@ -13,7 +13,8 @@ import {
   PORT, HOST, PUBLIC_DIR, FREE_PLAN, LIMITS, JOIN_HOST, PUBLIC_IP,
   ALLOWED_VERSIONS, DEFAULT_VERSION, IDLE_SLEEP_MS, REAPER_INTERVAL_MS,
   SOFTWARE, DEFAULT_SOFTWARE, softwareById, versionsFor, SFTP, CREDITS, ADMIN_EMAIL, MCROUTER, BACKUPS,
-  NETWORK, NETWORK_ICONS, DEFAULT_ICONS, LOBBY, LOBBY_ENV, LOBBY_PLUGINS, LOBBY_JAR, PROXY_MOTD,
+  NETWORK, NETWORK_ICONS, DEFAULT_ICONS, ALL_ICON_IDS, PREMIUM_ICONS, isPremiumIcon, premiumIcon,
+  LOBBY, LOBBY_ENV, LOBBY_PLUGINS, LOBBY_JAR, PROXY_MOTD,
   DEFAULT_RANKS, DEFAULT_RANK_ID, PERMISSION_NODES, LINK,
 } from './config.js';
 import { store, type Server, type Rank } from './store.js';
@@ -79,7 +80,7 @@ function serverLimitOf(u: { serverLimit?: number }): number {
 // The item a server wears in the network selector — its own if set, else a stable
 // default derived from its id so a brand-new server still looks distinct.
 function iconOf(s: Server): string {
-  if (s.icon && NETWORK_ICONS.includes(s.icon)) return s.icon;
+  if (s.icon && ALL_ICON_IDS.includes(s.icon)) return s.icon;
   let h = 0;
   for (const ch of s.id) h = (h * 31 + ch.charCodeAt(0)) & 0x7fffffff;
   return DEFAULT_ICONS[h % DEFAULT_ICONS.length];
@@ -208,6 +209,7 @@ app.get('/api/me', wrap((req, res) => {
     email: u.email, credits: store.creditsOf(u.id), admin: !!u.admin,
     serverLimit: serverLimitOf(u), serverCount: store.serversOf(u.id).length,
     mcName: u.mcName ?? null, mcLinked: !!u.mcUuid,
+    unlockedIcons: store.unlockedIconsOf(u.id),
   } : null);
 }));
 
@@ -363,6 +365,7 @@ app.get('/api/meta', (_req, res) => {
     plan: FREE_PLAN,
     joinHost: JOIN_HOST,
     itemIcons: NETWORK_ICONS,
+    premiumIcons: PREMIUM_ICONS,
   });
 });
 
@@ -812,14 +815,37 @@ app.get('/api/network', wrap(async (_req, res) => {
   res.json(netCache.body);
 }));
 
-// Choose the item this server wears in the selector.
+// Choose the item this server wears in the selector. Free icons are always allowed;
+// a premium icon may only be worn once the account has bought it (unlock is account-wide).
 app.put('/api/servers/:id/icon', wrap((req, res) => {
   const ok = owned(req, res); if (!ok) return;
   const icon = String(req.body?.icon || '');
-  if (!NETWORK_ICONS.includes(icon)) return void res.status(400).json({ error: 'Unknown item icon.' });
+  if (!ALL_ICON_IDS.includes(icon)) return void res.status(400).json({ error: 'Unknown item icon.' });
+  if (isPremiumIcon(icon) && !store.ownsIcon(ok.user.id, icon)) {
+    const p = premiumIcon(icon);
+    return void res.status(402).json({ error: `${p?.label ?? 'That icon'} is premium — buy it in the Store first (◈ ${p?.price ?? 0}).` });
+  }
   store.touchServer(ok.server.id, { icon });
   netCache = null;
   res.json({ ok: true, icon });
+}));
+
+// Buy a premium selector icon with Guthaben. One-time charge; the unlock is permanent
+// and account-wide, so the icon can then dress any server the account owns. Idempotent
+// against a double-click: already-owned is a no-op success, never a second charge.
+app.post('/api/icons/buy', wrap((req, res) => {
+  const u = requireUser(req, res); if (!u) return;
+  const icon = String(req.body?.icon || '');
+  const p = premiumIcon(icon);
+  if (!p) return void res.status(400).json({ error: 'That is not a premium icon.' });
+  if (store.ownsIcon(u.id, icon)) {
+    return void res.json({ ok: true, alreadyOwned: true, balance: store.creditsOf(u.id), unlockedIcons: store.unlockedIconsOf(u.id) });
+  }
+  if (!store.charge(u.id, p.price, `icon · ${p.label}`)) {
+    return void res.status(402).json({ error: `Not enough Guthaben — ${p.label} costs ◈ ${p.price}, you have ◈ ${store.creditsOf(u.id)}.` });
+  }
+  store.unlockIcon(u.id, icon);
+  res.json({ ok: true, icon, price: p.price, balance: store.creditsOf(u.id), unlockedIcons: store.unlockedIconsOf(u.id) });
 }));
 
 // Show or hide this server in the network selector and the public browser.
