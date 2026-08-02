@@ -446,7 +446,7 @@ app.get('/api/servers/:id', wrap(async (req, res) => {
     stats = await mc.stats(ok.server.id).catch(() => null);
     if (plist && plist.online > 0) store.touchServer(ok.server.id, { lastActive: Date.now() });
   }
-  res.json({ ...publicServer(ok.server), state: st, players: plist, stats, lastActive: ok.server.lastActive });
+  res.json({ ...publicServer(ok.server), state: st, players: plist, stats, lastActive: ok.server.lastActive, alertsUnread: store.unreadAlerts(ok.server.id), autoRestart: !!ok.server.autoRestart });
 }));
 
 app.post('/api/servers/:id/start', wrap(async (req, res) => {
@@ -459,8 +459,13 @@ app.post('/api/servers/:id/start', wrap(async (req, res) => {
   // Self-heal: if the container is gone (daemon restart, manual removal), rebuild
   // it from the record rather than failing. The world volume is recreated fresh.
   await forceBackendConfig(ok.server);
-  if (st.exists) await mc.start(ok.server.id);
-  else await mc.createAndStart(ok.server, backendOptsFor(ok.server));
+  if (st.exists) {
+    // Migrate a pre-live-console container the first time it comes up: recreate it
+    // (keeping its world volume) with stdin open so its console is the real one.
+    // New containers are already born this way, so this only fires once per server.
+    if (!(await mc.consoleReady(ok.server.id))) await mc.rebuild(ok.server, backendOptsFor(ok.server));
+    await mc.start(ok.server.id);
+  } else await mc.createAndStart(ok.server, backendOptsFor(ok.server));
   store.touchServer(ok.server.id, { lastActive: Date.now() });
   store.logEvent(ok.server.id, 'start', 'started from the panel');
   network.markStarting(ok.server.id); // selector shows "Starting…" until it is really up
@@ -481,7 +486,17 @@ app.post('/api/servers/:id/restart', wrap(async (req, res) => {
   const ok = owned(req, res); if (!ok) return;
   if (maintenanceBlocks(res)) return;
   await forceBackendConfig(ok.server);
-  await mc.restart(ok.server.id);
+  const st = await mc.state(ok.server.id);
+  if (!st.exists) {
+    await mc.createAndStart(ok.server, backendOptsFor(ok.server));
+  } else if (!(await mc.consoleReady(ok.server.id))) {
+    // Also the moment to migrate an old container to the real console — recreate it
+    // (world kept) with stdin open, then make sure it ends up running.
+    await mc.rebuild(ok.server, backendOptsFor(ok.server));
+    if (!(await mc.state(ok.server.id)).running) await mc.start(ok.server.id);
+  } else {
+    await mc.restart(ok.server.id);
+  }
   store.touchServer(ok.server.id, { lastActive: Date.now() });
   store.logEvent(ok.server.id, 'restart', 'restarted from the panel');
   network.markRestarting(ok.server.id); // selector shows "Restarting…" until it is back up
@@ -628,11 +643,54 @@ app.get('/api/servers/:id/metrics', wrap((req, res) => {
   });
 }));
 
+// ---------------------------------------------------------------- analytics API
+// The long, persisted history for the Analytics page: players, CPU and memory over
+// a day, three days or a week. Sampled every few minutes (see the sampler) and kept
+// across restarts, so this is a real trend, not the last half hour redrawn.
+const ANALYTICS_RANGES: Record<string, number> = { '24h': 24 * 3600e3, '3d': 3 * 24 * 3600e3, '7d': 7 * 24 * 3600e3 };
+app.get('/api/servers/:id/analytics', wrap((req, res) => {
+  const ok = owned(req, res); if (!ok) return;
+  const range = ANALYTICS_RANGES[String(req.query.range)] ? String(req.query.range) : '24h';
+  const points = metrics.longHistory(ok.server.id, Date.now() - ANALYTICS_RANGES[range]);
+  res.json({
+    range,
+    stepMs: metrics.LONG_STEP_MS,
+    points,
+    cpuMax: Math.round(FREE_PLAN.cpus * 100),
+    memLimit: FREE_PLAN.containerMB * 1024 * 1024,
+    ramMB: FREE_PLAN.ramMB,
+    maxPlayers: FREE_PLAN.maxPlayers,
+  });
+}));
+
 // --------------------------------------------------------------- activity API
 // The server's recent history — power changes, backups, schedules that fired.
 app.get('/api/servers/:id/events', wrap((req, res) => {
   const ok = owned(req, res); if (!ok) return;
   res.json({ events: store.eventsOf(ok.server.id, 24) });
+}));
+
+// ------------------------------------------------------------------ alerts API
+// The moments that mattered — crashes, OOM kills, auto-restarts, recoveries, high
+// memory — recorded by the monitor from real container state. Plus the per-server
+// auto-restart toggle.
+app.get('/api/servers/:id/alerts', wrap((req, res) => {
+  const ok = owned(req, res); if (!ok) return;
+  res.json({ alerts: store.alertsOf(ok.server.id, 60), autoRestart: !!ok.server.autoRestart, unread: store.unreadAlerts(ok.server.id) });
+}));
+
+app.post('/api/servers/:id/alerts/read', wrap((req, res) => {
+  const ok = owned(req, res); if (!ok) return;
+  store.markAlertsRead(ok.server.id);
+  res.json({ ok: true });
+}));
+
+app.post('/api/servers/:id/auto-restart', wrap((req, res) => {
+  const ok = owned(req, res); if (!ok) return;
+  const on = !!req.body?.on;
+  store.touchServer(ok.server.id, { autoRestart: on });
+  store.logEvent(ok.server.id, 'settings', `auto-restart turned ${on ? 'on' : 'off'}`);
+  res.json({ ok: true, autoRestart: on });
 }));
 
 // -------------------------------------------------------------- schedules API
@@ -748,6 +806,14 @@ app.post('/api/servers/:id/command', wrap(async (req, res) => {
   const st = await mc.state(ok.server.id);
   if (!st.running) return void res.status(409).json({ error: 'The server is asleep. Start it first.' });
   try {
+    if (await mc.consoleReady(ok.server.id)) {
+      // The real console: type it in over stdin. The output comes back on the live
+      // console stream (the WebSocket), not in this response — same as a terminal.
+      await mc.send(ok.server.id, command);
+      return void res.json({ sent: true });
+    }
+    // Legacy container without an open stdin (predates the live console): fall back
+    // to RCON until its next restart rebuilds it with the real console.
     const out = await mc.rcon(ok.server.id, command);
     res.json({ output: out });
   } catch (e: any) {
@@ -762,6 +828,7 @@ app.delete('/api/servers/:id', wrap(async (req, res) => {
   const ok = owned(req, res); if (!ok) return;
   await mc.remove(ok.server.id).catch(() => {});
   await backups.destroyAll(ok.server.id).catch(() => {});
+  metrics.clear(ok.server.id); // drop its live ring + persisted history
   store.dropServer(ok.server.id);
   void network.refresh().catch(() => {});
   res.json({ ok: true });
@@ -1637,13 +1704,16 @@ httpServer.on('upgrade', async (req, socket, head) => {
     } catch (e: any) {
       ws.send(`[endhost] console unavailable: ${e?.message || e}\n`);
     }
-    // Interactive input over the socket: run the command through the server's own
-    // console (RCON) and echo what it said. The panel also has a POST path; this is
-    // what lets an admin type into a server they don't own.
+    // Interactive input over the socket: type it into the server's real console over
+    // stdin — the output comes back on this same stream, exactly as at a terminal.
+    // (Older containers without an open stdin fall back to RCON until they restart.)
+    // The panel also has a POST path; this is what lets an admin type into a server
+    // they don't own.
     ws.on('message', async (data) => {
       const cmd = String(data).replace(/[\r\n]+$/, '').trim();
       if (!cmd) return;
       try {
+        if (await mc.consoleReady(server.id)) { await mc.send(server.id, cmd); return; }
         const out = await mc.rcon(server.id, cmd);
         if (ws.readyState === ws.OPEN && out) ws.send(out + '\n');
       } catch (e: any) {
@@ -1710,12 +1780,114 @@ async function sampleMetrics(): Promise<void> {
     try {
       const st = await mc.state(s.id);
       if (!st.running) continue;
+      const now = Date.now();
       const stat = await mc.stats(s.id);
-      if (stat) metrics.record(s.id, { at: Date.now(), cpuPct: stat.cpuPct, memBytes: stat.memBytes, memLimit: stat.memLimit });
+      if (stat) metrics.record(s.id, { at: now, cpuPct: stat.cpuPct, memBytes: stat.memBytes, memLimit: stat.memLimit });
+      // Every few minutes, fold a coarse point into the persisted long history for
+      // the Analytics page — and only then pay for a player-count query, so the long
+      // series carries players over days without polling every 30s.
+      if (stat && metrics.longDue(s.id, now)) {
+        let players = 0;
+        try { players = (await mc.players(s.id)).online; } catch { /* count unknown this pass */ }
+        metrics.recordLong(s.id, { at: now, cpuPct: stat.cpuPct, memBytes: stat.memBytes, memLimit: stat.memLimit, players });
+      }
     } catch { /* skip this server this pass */ }
   }
 }
 setInterval(() => { void sampleMetrics(); }, 30_000).unref();
+
+// ------------------------------------------------------- alerts / crash monitor
+// Watch every server's real running state between polls. A stop the panel asked for
+// (mc.stop/restart/rebuild remembers it) is silent; an out-of-memory kill or an exit
+// we never asked for is a crash — recorded as an alert and, if the owner opted in,
+// restarted automatically with a crash-loop guard. Everything here is read off the
+// container; nothing is guessed.
+const lastRunning = new Map<string, boolean>();
+const downUnexpected = new Set<string>();          // saw a crash/oom → a come-up is a recovery
+const highMemSince = new Map<string, number>();
+const lastHighMemAlert = new Map<string, number>();
+const autoRestarts = new Map<string, number[]>();  // recent auto-restart times (loop guard)
+
+async function maybeAutoRestart(s: Server): Promise<void> {
+  if (!s.autoRestart || store.getMaintenance()) return;
+  const now = Date.now();
+  const recent = (autoRestarts.get(s.id) ?? []).filter((t) => now - t < 30 * 60_000);
+  if (recent.length >= 3) {
+    store.addAlert(s.id, 'auto-restart', 'warn', 'Crashed repeatedly — auto-restart is paused to avoid a crash loop. Start it by hand once it’s fixed.');
+    return;
+  }
+  if ((await runningCount()) >= LIMITS.maxConcurrentRunning) {
+    store.addAlert(s.id, 'auto-restart', 'warn', 'Wanted to auto-restart, but every live slot is busy right now.');
+    return;
+  }
+  try {
+    await forceBackendConfig(s);
+    const st = await mc.state(s.id);
+    if (st.exists) { if (!(await mc.consoleReady(s.id))) await mc.rebuild(s, backendOptsFor(s)); await mc.start(s.id); }
+    else await mc.createAndStart(s, backendOptsFor(s));
+    recent.push(now); autoRestarts.set(s.id, recent);
+    downUnexpected.delete(s.id); // the auto-restart note already tells the recovery story
+    store.touchServer(s.id, { lastActive: now });
+    store.addAlert(s.id, 'auto-restart', 'info', 'Auto-restarted after the crash.');
+    store.logEvent(s.id, 'restart', 'auto-restarted after a crash');
+    network.markStarting(s.id);
+    void network.refresh().catch(() => {});
+  } catch (e: any) {
+    store.addAlert(s.id, 'auto-restart', 'warn', `Tried to auto-restart, but it failed: ${e?.message || e}`);
+  }
+}
+
+async function monitorAlerts(): Promise<void> {
+  for (const s of store.allServers()) {
+    let st: mc.LiveState;
+    try { st = await mc.state(s.id); } catch { continue; }
+    const was = lastRunning.get(s.id);
+    const isRunning = st.running;
+    if (was === undefined) { lastRunning.set(s.id, isRunning); continue; } // baseline; never alert on first sight
+
+    if (was && !isRunning) {
+      const expected = mc.wasExpectedStop(s.id);
+      mc.clearExpectedStop(s.id);
+      if (st.oomKilled) {
+        store.addAlert(s.id, 'oom', 'high', 'Ran out of memory and was killed by the host. Consider fewer plugins or a smaller view-distance.');
+        store.logEvent(s.id, 'alert', 'out-of-memory kill');
+        downUnexpected.add(s.id);
+        await maybeAutoRestart(s);
+      } else if (!expected) {
+        const code = st.exitCode == null ? '' : ` (exit ${st.exitCode})`;
+        store.addAlert(s.id, 'crash', 'high', `Stopped unexpectedly${code} — a crash or a server-side exit, not a stop from here.`);
+        store.logEvent(s.id, 'alert', 'crashed / unexpected stop');
+        downUnexpected.add(s.id);
+        await maybeAutoRestart(s);
+      }
+      highMemSince.delete(s.id);
+    } else if (!was && isRunning) {
+      if (downUnexpected.delete(s.id)) store.addAlert(s.id, 'online', 'info', 'Recovered and back online.');
+    }
+
+    if (isRunning) {
+      mc.clearExpectedStop(s.id); // don't let a stale marker mask a future crash
+      const stat = await mc.stats(s.id).catch(() => null);
+      if (stat && stat.memLimit) {
+        const frac = stat.memBytes / stat.memLimit;
+        if (frac >= 0.92) {
+          const since = highMemSince.get(s.id) ?? Date.now();
+          highMemSince.set(s.id, since);
+          const lastAlert = lastHighMemAlert.get(s.id) ?? 0;
+          if (Date.now() - since >= 2 * 60_000 && Date.now() - lastAlert >= 30 * 60_000) {
+            store.addAlert(s.id, 'high-mem', 'warn', `Memory has sat above ${Math.round(frac * 100)}% for a couple of minutes — it may be heading for an out-of-memory kill.`);
+            lastHighMemAlert.set(s.id, Date.now());
+          }
+        } else {
+          highMemSince.delete(s.id);
+        }
+      }
+    }
+
+    lastRunning.set(s.id, isRunning);
+  }
+}
+setInterval(() => { void monitorAlerts(); }, 20_000).unref();
 
 // ------------------------------------------------------- schedule engine tick
 // Fire any automated task that has come due. One minute is fine granularity for

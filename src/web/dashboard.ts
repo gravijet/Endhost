@@ -1,7 +1,7 @@
 import { wireClicks, sound } from './sound.js';
 import { el, $, clear, toast } from './dom.js';
 import { motdToHtml, fmtBytes, ago } from './mc.js';
-import { api, ApiError, type Meta, type PremiumIcon, type ServerDetail, type ServerSummary, type LiveState, type FileEntry, type DirListing, type SftpInfo, type ModHit, type Me, type CreditsInfo, type AdminUser, type AdminServer, type Tx, type Backup, type Roster, type PlayerAction, type WorldInfo, type GameRuleDef, type DomainInfo, type DomainCheck, type MetricsInfo, type SchedulesInfo, type Schedule, type ScheduleActionDef, type NetworkServer, type AdminNetworkServer, type ProxyAction, type MaintenanceInfo, type Rank, type RankAssignment, type RanksInfo } from './api.js';
+import { api, ApiError, type Meta, type PremiumIcon, type ServerDetail, type ServerSummary, type LiveState, type FileEntry, type DirListing, type SftpInfo, type ModHit, type Me, type CreditsInfo, type AdminUser, type AdminServer, type Tx, type Backup, type Roster, type PlayerAction, type WorldInfo, type GameRuleDef, type DomainInfo, type DomainCheck, type MetricsInfo, type AnalyticsInfo, type LongPoint, type Alert, type AlertsInfo, type SchedulesInfo, type Schedule, type ScheduleActionDef, type NetworkServer, type AdminNetworkServer, type ProxyAction, type MaintenanceInfo, type Rank, type RankAssignment, type RanksInfo } from './api.js';
 
 wireClicks();
 
@@ -961,9 +961,9 @@ function serverSections(s: ServerSummary): NavDef[] {
     { id: 'schedule', label: 'Schedule', glyph: '◷' },
     { id: 'network', label: 'Address', glyph: '⌂' },
     { id: 'access', label: 'Access', glyph: '⇄' },
-    { id: 'analytics', label: 'Analytics', glyph: '◔', soon: true },
+    { id: 'analytics', label: 'Analytics', glyph: '◔' },
+    { id: 'alerts', label: 'Alerts', glyph: '⚑' },
     { id: 'team', label: 'Team', glyph: '⧉', soon: true },
-    { id: 'alerts', label: 'Alerts', glyph: '⚑', soon: true },
     { id: 'settings', label: 'Settings', glyph: '⚙' },
   ];
   return defs;
@@ -976,7 +976,7 @@ function sectionHead(summary: ServerSummary, section: ServerSection): HTMLElemen
   const marketLabel = summary.kind === 'mods' ? 'Mods' : 'Plugins';
   const M: Record<ServerSection, { eyebrow: string; title: string; desc: string }> = {
     overview: { eyebrow: 'Server',     title: 'Overview',      desc: 'Live status, the address players join by, and how the machine is holding up.' },
-    console:  { eyebrow: 'Server',     title: 'Console',       desc: 'The server’s own log, and a command line straight into it over RCON.' },
+    console:  { eyebrow: 'Server',     title: 'Console',       desc: 'The server’s own live log, with a command line that types straight into the real console.' },
     players:  { eyebrow: 'Server',     title: 'Players',       desc: 'Who is on now, alongside the operator, whitelist and ban lists.' },
     world:    { eyebrow: 'Gameplay',   title: 'World settings', desc: 'Difficulty and gamerules. These save into the world, so they hold across restarts.' },
     files:    { eyebrow: 'Storage',    title: 'Files',         desc: 'Browse and edit the world, configs, plugins and mods directly in the browser.' },
@@ -985,9 +985,9 @@ function sectionHead(summary: ServerSummary, section: ServerSection): HTMLElemen
     schedule: { eyebrow: 'Automation', title: 'Schedule',      desc: 'Automated tasks — a nightly restart, a scheduled backup, a timed command. They run on their own.' },
     network:  { eyebrow: 'Connection', title: 'Address',       desc: 'The address players join by, and a custom domain of your own if you want one.' },
     access:   { eyebrow: 'Connection', title: 'Access',        desc: 'SFTP details for moving whole folders with FileZilla, WinSCP or Cyberduck.' },
-    analytics:{ eyebrow: 'Insights',   title: 'Analytics',     desc: 'Player history, tick performance and peak times over the long run — coming soon.' },
+    analytics:{ eyebrow: 'Insights',   title: 'Analytics',     desc: 'Players, CPU and memory over the last day to the last week — real samples, kept across restarts.' },
     team:     { eyebrow: 'Access',     title: 'Team',          desc: 'Invite trusted people to co-manage this server, with roles — coming soon.' },
-    alerts:   { eyebrow: 'Automation', title: 'Alerts',        desc: 'Get pinged on Discord or email when this server crashes, fills up or goes quiet — coming soon.' },
+    alerts:   { eyebrow: 'Automation', title: 'Alerts',        desc: 'A log of the moments that matter — crashes, out-of-memory kills, back-online — with auto-restart on crash.' },
     settings: { eyebrow: 'Server',     title: 'Settings',      desc: 'The facts about this server, and the danger zone.' },
   };
   const m = M[section];
@@ -1024,11 +1024,14 @@ function renderServer(summary: ServerSummary, section: ServerSection): HTMLEleme
   );
 
   const nav = el('div', { class: 'sv-nav' });
-  serverSections(summary).forEach((d) => nav.append(
-    el('a', { class: 'sv-nav-item' + (d.id === section ? ' active' : '') + (d.soon ? ' soon' : ''), href: serverHash(summary.id, d.id), 'data-sec': d.id, onclick: () => sound.click() },
+  let alertsBadge: HTMLElement | null = null;
+  serverSections(summary).forEach((d) => {
+    const badge = d.id === 'alerts' ? el('span', { class: 'sv-nav-badge', style: 'display:none' }) : null;
+    if (badge) alertsBadge = badge;
+    nav.append(el('a', { class: 'sv-nav-item' + (d.id === section ? ' active' : '') + (d.soon ? ' soon' : ''), href: serverHash(summary.id, d.id), 'data-sec': d.id, onclick: () => sound.click() },
       el('span', { class: 'gl' }, d.glyph), el('span', { class: 'lbl' }, d.label),
-      d.soon ? el('span', { class: 'soon-tag' }, 'soon') : ''),
-  ));
+      d.soon ? el('span', { class: 'soon-tag' }, 'soon') : '', badge || ''));
+  });
 
   // ---- the section body, plus any live hooks it needs
   let ov: OverviewRefs | null = null;
@@ -1044,14 +1047,8 @@ function renderServer(summary: ServerSummary, section: ServerSection): HTMLEleme
   else if (section === 'schedule') body = renderSchedule(summary.id);
   else if (section === 'network') body = networkPane(summary);
   else if (section === 'access') body = renderSftp(summary.id);
-  else if (section === 'analytics') body = comingSoon('Deep analytics are coming',
-    'Long-run charts of this server — players over days and weeks, tick performance (TPS/MSPT), memory trends and the times it’s busiest — built from real samples the panel already collects, never guessed.',
-    [
-      ['Player history', 'A graph of concurrent players across days and weeks, not just the last hour.'],
-      ['Tick performance', 'TPS and MSPT over time, so a slow plugin shows up as a real dip.'],
-      ['Peak hours', 'When your server is busiest, so you can time restarts around it.'],
-      ['Resource trends', 'CPU and memory across the long run, alongside the live meters on Overview.'],
-    ]);
+  else if (section === 'analytics') body = renderAnalytics(summary);
+  else if (section === 'alerts') body = renderAlerts(summary);
   else if (section === 'team') body = comingSoon('Share this server with your team',
     'Invite trusted people to help run this server without handing over your account — each with a role that decides what they can touch.',
     [
@@ -1059,14 +1056,6 @@ function renderServer(summary: ServerSummary, section: ServerSection): HTMLEleme
       ['Roles', 'Operator, builder or viewer — scoped to console, files, power and more.'],
       ['Audit log', 'A record of who did what, so a shared server stays accountable.'],
       ['Per-server', 'Access is granted one server at a time — never your whole account.'],
-    ]);
-  else if (section === 'alerts') body = comingSoon('Know the moment something happens',
-    'Get a heads-up when this server needs you — a crash, an out-of-memory kill, a full player slot or a long silence — on the channels you actually watch.',
-    [
-      ['Crash & OOM', 'A ping when the server stops unexpectedly or the kernel OOM-kills it.'],
-      ['Capacity', 'A nudge when the server fills up, so you can raise or celebrate it.'],
-      ['Channels', 'Delivered to Discord or email — you choose per alert.'],
-      ['Quiet hours', 'Mute non-urgent alerts overnight so only real emergencies wake you.'],
     ]);
   else body = settingsPane(summary);
 
@@ -1117,6 +1106,11 @@ function renderServer(summary: ServerSummary, section: ServerSection): HTMLEleme
     updateHeader(d);
     if (ov) updateOverview(ov, d);
     if (cons) { if (d.state.running) cons.connect(); else cons.drop(); }
+    if (alertsBadge) {
+      const n = d.alertsUnread || 0;
+      alertsBadge.textContent = n > 9 ? '9+' : String(n);
+      alertsBadge.style.display = n ? '' : 'none';
+    }
   }
 
   const seed = detailCache.get(summary.id);
@@ -1180,6 +1174,210 @@ function buildGraph(serverId: string): HTMLElement {
   const t = window.setInterval(refresh, 15000);
   onDispose(() => window.clearInterval(t));
   void refresh();
+  return node;
+}
+
+// ---- analytics: the persisted long history, drawn as real trend charts
+const AN_RANGES: Array<{ key: string; label: string; ms: number }> = [
+  { key: '24h', label: '24 hours', ms: 24 * 3600e3 },
+  { key: '3d', label: '3 days', ms: 3 * 24 * 3600e3 },
+  { key: '7d', label: '7 days', ms: 7 * 24 * 3600e3 },
+];
+
+// One trend chart. Time runs left→right across the whole range, so an asleep stretch
+// shows as a gap in the line rather than a straight lie across it: the series is cut
+// into segments wherever two samples are more than a few steps apart.
+function trendChart(title: string, color: string, unit: string,
+                    points: LongPoint[], val: (p: LongPoint) => number, max: number,
+                    t0: number, t1: number, stepMs: number, fmt: (n: number) => string): HTMLElement {
+  const W = 660, H = 132, padX = 10, padTop = 10, padBot = 4;
+  const span = Math.max(1, t1 - t0);
+  const xAt = (at: number) => padX + ((at - t0) / span) * (W - 2 * padX);
+  const yAt = (v: number) => padTop + (1 - Math.min(1, Math.max(0, max ? v / max : 0))) * (H - padTop - padBot);
+  const gap = stepMs * 2.5;
+
+  const grid = [0, 0.5, 1].map((f) => {
+    const y = (padTop + (1 - f) * (H - padTop - padBot)).toFixed(1);
+    return `<line x1="${padX}" y1="${y}" x2="${W - padX}" y2="${y}" stroke="rgba(180,168,224,0.14)" stroke-width="1"/>`;
+  }).join('');
+
+  let line = '';
+  if (points.length) {
+    const segs: string[][] = [];
+    let cur: string[] = [];
+    let prev = 0;
+    for (const p of points) {
+      if (cur.length && p.at - prev > gap) { segs.push(cur); cur = []; }
+      cur.push(`${xAt(p.at).toFixed(1)},${yAt(val(p)).toFixed(1)}`);
+      prev = p.at;
+    }
+    if (cur.length) segs.push(cur);
+    line = segs.map((s) => s.length === 1
+      ? `<circle cx="${s[0].split(',')[0]}" cy="${s[0].split(',')[1]}" r="2" fill="${color}"/>`
+      : `<polyline points="${s.join(' ')}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`,
+    ).join('');
+  }
+
+  const peak = points.length ? Math.max(...points.map(val)) : 0;
+  const now = points.length ? val(points[points.length - 1]) : 0;
+  const body = points.length
+    ? el('div', { class: 'an-plot', html: `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="an-svg" aria-hidden="true">${grid}${line}</svg>` })
+    : el('div', { class: 'an-plot an-plot-empty' }, el('span', { class: 't-mute sh' }, 'no samples in this window'));
+
+  return el('div', { class: 'entry an-chart' },
+    el('div', { class: 'an-chart-head' },
+      el('span', { class: 'k' }, title),
+      el('span', { class: 'an-chart-peak t-mute sh' }, points.length ? `now ${fmt(now)}${unit} · peak ${fmt(peak)}${unit}` : ''),
+    ),
+    body,
+  );
+}
+
+function anTimeLabel(t: number, rangeMs: number): string {
+  const d = new Date(t);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  if (rangeMs > 26 * 3600e3) return `${d.getDate()}.${d.getMonth() + 1}. ${hh}:${mm}`;
+  return `${hh}:${mm}`;
+}
+
+function anStat(label: string, value: string): HTMLElement {
+  return el('div', { class: 'entry an-stat' }, el('div', { class: 'an-stat-v' }, value), el('div', { class: 'an-stat-k t-mute sh' }, label));
+}
+
+function renderAnalytics(summary: ServerSummary): HTMLElement {
+  let range = '24h';
+  const controls = el('div', { class: 'an-ranges' });
+  const stats = el('div', { class: 'an-stats' });
+  const charts = el('div', { class: 'an-charts' }, el('div', { class: 'an-loading t-mute sh' }, 'loading…'));
+  const axis = el('div', { class: 'an-axis t-mute sh' });
+  const node = el('div', { class: 'an' },
+    el('div', { class: 'an-bar' }, el('span', { class: 'label' }, 'Range'), controls),
+    stats, charts, axis,
+  );
+
+  function drawControls(): void {
+    clear(controls);
+    AN_RANGES.forEach((r) => controls.append(el('button', {
+      class: 'btn btn-xs ' + (range === r.key ? 'btn-portal' : 'btn-ghost'), type: 'button',
+      onclick: () => { if (range === r.key) return; range = r.key; drawControls(); void load(); },
+    }, r.label)));
+  }
+
+  async function load(): Promise<void> {
+    let info: AnalyticsInfo;
+    try { info = await api.analytics(summary.id, range); }
+    catch (e) { clear(charts); charts.append(el('div', { class: 'an-loading t-mute sh' }, fail(e))); return; }
+    const rangeMs = AN_RANGES.find((r) => r.key === info.range)?.ms ?? 24 * 3600e3;
+    const t1 = Date.now(), t0 = t1 - rangeMs;
+    const pts = info.points;
+
+    clear(stats);
+    if (pts.length) {
+      const peakPl = Math.max(...pts.map((p) => p.players));
+      const avgCpu = pts.reduce((a, p) => a + p.cpuPct, 0) / pts.length;
+      const peakMem = Math.max(...pts.map((p) => p.memBytes));
+      stats.append(
+        anStat('Peak players', String(peakPl)),
+        anStat('Average CPU', `${Math.round((avgCpu / (info.cpuMax || 100)) * 100)}%`),
+        anStat('Peak memory', fmtBytes(peakMem)),
+        anStat('Samples', String(pts.length)),
+      );
+    }
+
+    clear(charts);
+    if (!pts.length) {
+      charts.append(el('div', { class: 'entry pad an-none' },
+        el('div', { class: 'an-none-badge' }, '◔'),
+        el('div', { class: 'label mb' }, 'No history for this window yet'),
+        el('p', { class: 'set-lead t-mute sh', style: 'margin:0' },
+          'Analytics records one point every 5 minutes while the server is awake, and keeps up to a week. Start the server and the trend fills in — nothing here is estimated.'),
+      ));
+      clear(axis);
+      return;
+    }
+    charts.append(
+      trendChart('Players online', '#7cc4ff', '', pts, (p) => p.players, Math.max(1, info.maxPlayers), t0, t1, info.stepMs, (n) => String(Math.round(n))),
+      trendChart('CPU', '#35d3b0', '%', pts, (p) => (p.cpuPct / (info.cpuMax || 100)) * 100, 100, t0, t1, info.stepMs, (n) => String(Math.round(n))),
+      trendChart('Memory', '#ffb340', '', pts, (p) => p.memBytes, info.memLimit || Math.max(...pts.map((p) => p.memLimit)) || 1, t0, t1, info.stepMs, (n) => fmtBytes(n)),
+    );
+    clear(axis);
+    axis.append(el('span', {}, anTimeLabel(t0, rangeMs)), el('span', {}, 'now'));
+  }
+
+  drawControls();
+  void load();
+  const t = window.setInterval(load, 60_000);
+  onDispose(() => window.clearInterval(t));
+  return node;
+}
+
+// ---- alerts: real events the monitor recorded, plus auto-restart on crash
+function alertIcon(kind: string): string {
+  return ({ crash: '✖', oom: '☠', online: '✔', 'high-mem': '▲', 'auto-restart': '↻' } as Record<string, string>)[kind] || '●';
+}
+function alertKindLabel(kind: string): string {
+  return ({ crash: 'Crash', oom: 'Out of memory', online: 'Recovered', 'high-mem': 'High memory', 'auto-restart': 'Auto-restart' } as Record<string, string>)[kind] || 'Notice';
+}
+
+function renderAlerts(summary: ServerSummary): HTMLElement {
+  const auto = el('div', { class: 'al-auto-slot' });
+  const feed = el('div', { class: 'al-feed' }, el('div', { class: 'al-empty t-mute sh' }, 'loading…'));
+  const node = el('div', { class: 'al' },
+    auto,
+    el('div', { class: 'al-feed-head' }, el('span', { class: 'k' }, 'Recent alerts'), el('span', { class: 'k t-mute' }, 'newest first')),
+    feed,
+  );
+
+  function drawAuto(on: boolean): void {
+    const btn = el('button', {
+      class: `btn btn-sm ${on ? 'btn-portal' : 'btn-ghost'}`,
+      onclick: async (e: Event) => {
+        const b = e.currentTarget as HTMLElement; b.classList.add('is-disabled');
+        try { const r = await api.setAutoRestart(summary.id, !on); drawAuto(r.autoRestart); }
+        catch (err) { toast(fail(err), 'err'); b.classList.remove('is-disabled'); }
+      },
+    }, on ? '☀ On' : '☾ Off');
+    clear(auto);
+    auto.append(el('div', { class: 'entry pad al-auto' },
+      el('div', { class: 'al-auto-txt' },
+        el('div', { class: 'label mb' }, 'Auto-restart on crash'),
+        el('p', { class: 'set-lead t-mute sh', style: 'margin:0' }, 'If this server stops unexpectedly — a crash or an out-of-memory kill — the panel brings it straight back up. Repeated crashes pause it so it can’t loop.'),
+      ),
+      el('div', { class: 'al-auto-ctl' }, btn),
+    ));
+  }
+
+  let markedRead = false;
+  async function load(): Promise<void> {
+    let info: AlertsInfo;
+    try { info = await api.alerts(summary.id); }
+    catch (e) { clear(feed); feed.append(el('div', { class: 'al-empty t-mute sh' }, fail(e))); return; }
+    drawAuto(info.autoRestart);
+    clear(feed);
+    if (!info.alerts.length) {
+      feed.append(el('div', { class: 'entry pad al-none' },
+        el('div', { class: 'al-none-badge' }, '✓'),
+        el('div', { class: 'label mb' }, 'All quiet'),
+        el('p', { class: 'set-lead t-mute sh', style: 'margin:0' }, 'No crashes, out-of-memory kills or warnings recorded. This page fills in only when something real happens to the server — never with filler.'),
+      ));
+    } else {
+      info.alerts.forEach((a: Alert) => feed.append(el('div', { class: `entry al-row sev-${a.severity}${a.read ? '' : ' unread'}` },
+        el('span', { class: `al-ic al-ic-${a.kind}` }, alertIcon(a.kind)),
+        el('div', { class: 'al-main' },
+          el('div', { class: 'al-msg' }, a.message),
+          el('div', { class: 'al-when t-mute sh' }, `${alertKindLabel(a.kind)} · ${ago(a.at)}`),
+        ),
+      )));
+    }
+    // Opening the page clears the badge, but the first render still shows which were
+    // new — mark them read in the background once, right after that render.
+    if (!markedRead && info.unread) { markedRead = true; api.markAlertsRead(summary.id).catch(() => {}); }
+  }
+
+  void load();
+  const t = window.setInterval(load, 12_000);
+  onDispose(() => window.clearInterval(t));
   return node;
 }
 
@@ -1348,7 +1546,12 @@ function buildConsole(serverId: string): { node: HTMLElement; connect: () => voi
   async function runCmd(c: string): Promise<void> {
     c = c.trim(); if (!c) return;
     pushLine(`> ${c}`, 'l-you');
-    try { const r = await api.command(serverId, c); if (r.output) r.output.split('\n').forEach((l) => pushLine(l, 'l-info')); }
+    try {
+      const r = await api.command(serverId, c);
+      // On the real console the output flows back through the live stream, so there
+      // is nothing to print here. `output` only comes back on the legacy RCON path.
+      if (r.output) r.output.split('\n').forEach((l) => pushLine(l, 'l-info'));
+    }
     catch (err) { pushLine(fail(err), err instanceof ApiError && err.status === 425 ? 'l-warn' : 'l-err'); }
   }
 
@@ -1356,7 +1559,7 @@ function buildConsole(serverId: string): { node: HTMLElement; connect: () => voi
     onsubmit: (e: Event) => { e.preventDefault(); const c = cmd.value.trim(); if (!c) return; cmd.value = ''; void runCmd(c); },
   }, el('span', { class: 'prompt' }, '>'), cmd, el('button', { class: 'btn btn-sm', type: 'submit' }, 'Run'));
 
-  // One-tap common commands — each runs the real thing over RCON, same as typing it.
+  // One-tap common commands — each is typed into the real console, same as typing it.
   const quicks: [string, string][] = [['List', 'list'], ['Save', 'save-all'], ['Day', 'time set day'], ['Clear weather', 'weather clear'], ['Reload perms', 'reload confirm']];
   const quick = el('div', { class: 'console-quick' }, el('span', { class: 'cq-label' }, 'Quick:'),
     ...quicks.map(([label, c]) => el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => void runCmd(c) }, label)));

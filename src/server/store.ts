@@ -101,6 +101,23 @@ export interface Server {
   // Owner opt-in: players may start this server from inside the lobby (its selector tile
   // and `/start`), subject to the same concurrency limits as the panel. Absent = off.
   lobbyStartable?: boolean;
+  // Owner opt-in: if the server stops unexpectedly (a crash or an out-of-memory kill),
+  // the panel brings it back up automatically — with a crash-loop guard. Absent = off.
+  autoRestart?: boolean;
+}
+
+// One notable moment in a server's life the owner should know about: a crash, an
+// out-of-memory kill, an automatic restart, sustained high memory, or a recovery.
+// Recorded by the alerts monitor from real container state — never invented — and
+// shown on the server's Alerts page. Append-only and capped like events.
+export interface Alert {
+  id: string;
+  serverId: string;
+  at: number;
+  kind: string;                       // 'crash' | 'oom' | 'online' | 'high-mem' | 'auto-restart'
+  severity: 'info' | 'warn' | 'high';
+  message: string;
+  read?: boolean;
 }
 
 // One rank in the network-wide rank system, edited from the admin Ranks page and written into
@@ -195,6 +212,7 @@ interface DB {
   backups: Backup[];
   schedules: Schedule[];
   events: ServerEvent[];
+  alerts: Alert[];
   network: Network | null;
   // Host-wide maintenance: when true the operator has shut every Minecraft-facing
   // service down (proxy, subdomain router, all servers) to free ports 25565–25580.
@@ -211,12 +229,12 @@ function load(): DB {
   try {
     if (existsSync(FILE)) {
       const d = JSON.parse(readFileSync(FILE, 'utf8')) as Partial<DB>;
-      return { users: d.users ?? {}, sessions: d.sessions ?? {}, servers: d.servers ?? {}, ledger: d.ledger ?? [], backups: d.backups ?? [], schedules: d.schedules ?? [], events: d.events ?? [], network: d.network ?? null, maintenance: d.maintenance ?? false };
+      return { users: d.users ?? {}, sessions: d.sessions ?? {}, servers: d.servers ?? {}, ledger: d.ledger ?? [], backups: d.backups ?? [], schedules: d.schedules ?? [], events: d.events ?? [], alerts: d.alerts ?? [], network: d.network ?? null, maintenance: d.maintenance ?? false };
     }
   } catch {
     /* corrupt or unreadable — start clean rather than crash the service */
   }
-  return { users: {}, sessions: {}, servers: {}, ledger: [], backups: [], schedules: [], events: [], network: null, maintenance: false };
+  return { users: {}, sessions: {}, servers: {}, ledger: [], backups: [], schedules: [], events: [], alerts: [], network: null, maintenance: false };
 }
 
 function persist(): void {
@@ -322,6 +340,7 @@ export const store = {
     delete db.servers[id];
     db.schedules = db.schedules.filter((s) => s.serverId !== id);
     db.events = db.events.filter((e) => e.serverId !== id);
+    db.alerts = db.alerts.filter((a) => a.serverId !== id);
     persist();
   },
 
@@ -363,6 +382,35 @@ export const store = {
   },
   eventsOf(serverId: string, limit = 20): ServerEvent[] {
     return db.events.filter((e) => e.serverId === serverId).slice(-limit).reverse();
+  },
+
+  // alerts (append-only, capped per server + globally; recorded by the monitor)
+  addAlert(serverId: string, kind: string, severity: Alert['severity'], message: string): Alert | null {
+    // Collapse an identical repeat within two minutes so a flapping condition can't
+    // bury the feed in duplicates.
+    const last = [...db.alerts].reverse().find((a) => a.serverId === serverId);
+    if (last && last.kind === kind && last.message === message && Date.now() - last.at < 120_000) return null;
+    const alert: Alert = { id: `al_${randomBytes(6).toString('hex')}`, serverId, at: Date.now(), kind, severity, message, read: false };
+    db.alerts.push(alert);
+    const mine = db.alerts.filter((a) => a.serverId === serverId);
+    if (mine.length > 80) {
+      const drop = new Set(mine.slice(0, mine.length - 80).map((a) => a.id));
+      db.alerts = db.alerts.filter((a) => !drop.has(a.id));
+    }
+    if (db.alerts.length > 4000) db.alerts.splice(0, db.alerts.length - 4000);
+    persist();
+    return alert;
+  },
+  alertsOf(serverId: string, limit = 50): Alert[] {
+    return db.alerts.filter((a) => a.serverId === serverId).slice(-limit).reverse();
+  },
+  unreadAlerts(serverId: string): number {
+    return db.alerts.reduce((n, a) => n + (a.serverId === serverId && !a.read ? 1 : 0), 0);
+  },
+  markAlertsRead(serverId: string): void {
+    let changed = false;
+    for (const a of db.alerts) if (a.serverId === serverId && !a.read) { a.read = true; changed = true; }
+    if (changed) persist();
   },
 
   // credits + ledger

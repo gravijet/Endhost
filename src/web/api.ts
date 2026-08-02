@@ -65,7 +65,11 @@ export interface Players { online: number; max: number; names: string[]; }
 export interface Stats { cpuPct: number; memBytes: number; memLimit: number; }
 export interface ServerDetail extends ServerSummary {
   state: LiveState; players: Players | null; stats: Stats | null; lastActive: number;
+  alertsUnread: number; autoRestart: boolean;
 }
+
+export interface Alert { id: string; serverId: string; at: number; kind: string; severity: 'info' | 'warn' | 'high'; message: string; read?: boolean; }
+export interface AlertsInfo { alerts: Alert[]; autoRestart: boolean; unread: number; }
 
 export interface FileEntry { name: string; type: 'dir' | 'file'; size: number; mtime: number; }
 export interface DirListing { path: string; entries: FileEntry[]; }
@@ -100,6 +104,8 @@ export interface NewSchedule { action: string; kind: 'interval' | 'daily'; hours
 
 export interface MetricPoint { at: number; cpuPct: number; memBytes: number; memLimit: number; }
 export interface MetricsInfo { points: MetricPoint[]; capacity: number; cpuMax: number; memLimit: number; ramMB: number; }
+export interface LongPoint { at: number; cpuPct: number; memBytes: number; memLimit: number; players: number; }
+export interface AnalyticsInfo { range: string; stepMs: number; points: LongPoint[]; cpuMax: number; memLimit: number; ramMB: number; maxPlayers: number; }
 
 export interface ServerEvent { id: string; serverId: string; at: number; kind: string; detail: string; }
 export interface EventsInfo { events: ServerEvent[]; }
@@ -153,7 +159,9 @@ export const api = {
   restart: (id: string) => req<{ ok: true }>('POST', `/api/servers/${id}/restart`),
   alwaysOn: (id: string, on: boolean) => req<{ ok: true; alwaysOn: boolean }>('POST', `/api/servers/${id}/always-on`, { on }),
   setSubdomain: (id: string, subdomain: string) => req<{ ok: true; subdomain: string; address: string }>('POST', `/api/servers/${id}/subdomain`, { subdomain }),
-  command: (id: string, command: string) => req<{ output: string }>('POST', `/api/servers/${id}/command`, { command }),
+  // `sent` means it went into the real console (output arrives on the live stream);
+  // `output` is only present on the legacy RCON fallback.
+  command: (id: string, command: string) => req<{ output?: string; sent?: boolean }>('POST', `/api/servers/${id}/command`, { command }),
   remove: (id: string) => req<{ ok: true }>('DELETE', `/api/servers/${id}`),
 
   // ---- file manager ----
@@ -189,6 +197,10 @@ export const api = {
 
   // ---- metrics + activity ----
   metrics: (id: string) => req<MetricsInfo>('GET', `/api/servers/${id}/metrics`),
+  analytics: (id: string, range: string) => req<AnalyticsInfo>('GET', `/api/servers/${id}/analytics?range=${encodeURIComponent(range)}`),
+  alerts: (id: string) => req<AlertsInfo>('GET', `/api/servers/${id}/alerts`),
+  markAlertsRead: (id: string) => req<{ ok: true }>('POST', `/api/servers/${id}/alerts/read`),
+  setAutoRestart: (id: string, on: boolean) => req<{ ok: true; autoRestart: boolean }>('POST', `/api/servers/${id}/auto-restart`, { on }),
   events: (id: string) => req<EventsInfo>('GET', `/api/servers/${id}/events`),
 
   // ---- schedules ----

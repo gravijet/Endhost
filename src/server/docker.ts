@@ -45,7 +45,23 @@ export interface LiveState {
   health: string | null;
   startedAt: string | null;
   oomKilled: boolean;
+  exitCode: number | null; // last exit code while stopped (0 = clean); null while running
 }
+
+// Stops the panel itself initiates — a manual stop, the idle reaper, host
+// maintenance, a restart or an in-place rebuild — are *expected*. We remember them
+// here briefly so the alerts monitor can tell a graceful shutdown from a crash
+// without threading "did we mean to do this?" through every call site: every
+// intentional down-transition runs through the functions below.
+const expectedStops = new Map<string, number>();
+export function markExpectedStop(id: string): void { expectedStops.set(id, Date.now()); }
+export function wasExpectedStop(id: string): boolean {
+  const t = expectedStops.get(id);
+  if (t === undefined) return false;
+  if (Date.now() - t > 5 * 60_000) { expectedStops.delete(id); return false; } // stale — treat as unexpected
+  return true;
+}
+export function clearExpectedStop(id: string): void { expectedStops.delete(id); }
 
 function get(id: string) {
   return docker.getContainer(containerName(id));
@@ -66,6 +82,13 @@ function createSpec(s: Server, volumeName: string | undefined, opts: BackendOpts
     // moves, bracketed-paste toggles) that would leak into the log stream. Off,
     // the logs are the server's own lines and nothing else — we demux them below.
     Tty: false,
+    // Keep stdin open so the panel can type into the server's *real* console: we
+    // attach and write the line, exactly what an operator at the terminal does, and
+    // mc-server-runner forwards it to the Minecraft process. The command's output
+    // comes back through the ordinary log stream (see follow) — which is what a real
+    // console looks like. This is why console commands no longer need RCON.
+    OpenStdin: true,
+    StdinOnce: false,
     Labels: { 'endhost.managed': '1', 'endhost.id': s.id, 'endhost.owner': s.owner },
     Env: [
       'EULA=TRUE',
@@ -121,6 +144,7 @@ export async function createAndStart(s: Server, opts: BackendOpts = {}): Promise
 // pass `v: true` here (that would delete the world). Used to convert a stand-alone
 // server into a proxy backend and back.
 export async function rebuild(s: Server, opts: BackendOpts = {}): Promise<void> {
+  markExpectedStop(s.id); // recreating the container is an intentional down, not a crash
   const c = get(s.id);
   let volumeName: string | undefined;
   let wasRunning = false;
@@ -199,15 +223,18 @@ export async function start(id: string): Promise<void> {
 }
 
 export async function stop(id: string): Promise<void> {
+  markExpectedStop(id); // a panel-initiated shutdown, not a crash
   // itzg traps SIGTERM and saves; give it real time before the kill.
   await get(id).stop({ t: 40 });
 }
 
 export async function restart(id: string): Promise<void> {
+  markExpectedStop(id); // the brief down in the middle is expected
   await get(id).restart({ t: 40 });
 }
 
 export async function remove(id: string): Promise<void> {
+  markExpectedStop(id);
   await get(id).remove({ force: true, v: true }); // container and its world volume
 }
 
@@ -220,9 +247,10 @@ export async function state(id: string): Promise<LiveState> {
       health: info.State.Health?.Status ?? null,
       startedAt: info.State.StartedAt ?? null,
       oomKilled: info.State.OOMKilled,
+      exitCode: info.State.Running ? null : (info.State.ExitCode ?? null),
     };
   } catch (e: any) {
-    if (e?.statusCode === 404) return { exists: false, running: false, health: null, startedAt: null, oomKilled: false };
+    if (e?.statusCode === 404) return { exists: false, running: false, health: null, startedAt: null, oomKilled: false, exitCode: null };
     throw e;
   }
 }
@@ -294,6 +322,29 @@ export async function rcon(id: string, command: string): Promise<string> {
     if (attempt >= 2) throw new RconError('The server is still starting — the console will be ready in a few seconds.');
     await new Promise((r) => setTimeout(r, 350));
   }
+}
+
+// Type one command straight into the server's real console over the container's
+// stdin (created with OpenStdin) — the same keystrokes an operator at the terminal
+// would send. There is nothing to read back here on purpose: the command runs as
+// the console command source, so its output lands in the normal log stream (see
+// follow), exactly as it would on a real server console. A newline inside the text
+// would smuggle in a second console line, so any are collapsed to spaces.
+export async function send(id: string, command: string): Promise<void> {
+  const c = get(id);
+  const stream = (await c.attach({ stream: true, stdin: true, stdout: true, stderr: true, hijack: true })) as Duplex;
+  stream.write(command.replace(/[\r\n]+/g, ' ') + '\n');
+  await new Promise((r) => setTimeout(r, 120)); // let the write flush before detaching
+  stream.end();
+}
+
+// Whether this server's container was created with an open stdin — i.e. whether the
+// real console (send) can reach it. Containers created before the live console
+// existed have it off; the panel falls back to RCON for them until a (re)start
+// rebuilds the container with stdin open.
+export async function consoleReady(id: string): Promise<boolean> {
+  try { return !!(await get(id).inspect()).Config?.OpenStdin; }
+  catch { return false; }
 }
 
 // "There are 3 of a max of 20 players online: a, b, c"
