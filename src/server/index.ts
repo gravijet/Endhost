@@ -17,7 +17,7 @@ import {
   LOBBY, LOBBY_ENV, LOBBY_PLUGINS, LOBBY_JAR, PROXY_MOTD,
   DEFAULT_RANKS, DEFAULT_RANK_ID, PERMISSION_NODES, LINK,
 } from './config.js';
-import { store, type Server, type Rank } from './store.js';
+import { store, type Server, type Rank, type Ticket } from './store.js';
 import * as mc from './docker.js';
 import * as network from './network.js';
 import * as hub from './lobby.js';
@@ -208,8 +208,11 @@ app.get('/api/me', wrap((req, res) => {
   res.json(u ? {
     email: u.email, credits: store.creditsOf(u.id), admin: !!u.admin,
     serverLimit: serverLimitOf(u), serverCount: store.serversOf(u.id).length,
+    sharedCount: store.membershipsOf(u.id).length,
     mcName: u.mcName ?? null, mcLinked: !!u.mcUuid,
     unlockedIcons: store.unlockedIconsOf(u.id),
+    supportUnread: store.ticketUnreadForUser(u.id),
+    ticketQueue: u.admin ? store.ticketUnreadForStaff() : 0,
   } : null);
 }));
 
@@ -255,6 +258,85 @@ app.get('/api/credits', wrap((req, res) => {
     alwaysOnPerHour: CREDITS.alwaysOnPerHour,
     ledger: store.ledgerOf(u.id, 30),
   });
+}));
+
+// ---- support: a real ticket conversation with the operators --------------------
+// An account opens a ticket and the operators (admins) reply; both sides see the same
+// thread. Nothing here is a bot — a reply is a real person writing back. `side` is who
+// is looking: the account ('user') or an operator ('staff'), which decides unread and
+// whose message a reply is filed as.
+const TICKET_CATEGORIES = ['server', 'billing', 'network', 'account', 'other'];
+function ticketSummary(t: Ticket, side: 'user' | 'staff') {
+  const last = t.messages[t.messages.length - 1];
+  return {
+    id: t.id, subject: t.subject, category: t.category, status: t.status,
+    createdAt: t.createdAt, updatedAt: t.updatedAt, count: t.messages.length,
+    unread: store.ticketHasUnread(t, side), lastFromStaff: !!last?.staff,
+    email: store.userById(t.userId)?.email ?? '(removed account)',
+  };
+}
+function ticketThread(t: Ticket, side: 'user' | 'staff') {
+  return {
+    id: t.id, subject: t.subject, category: t.category, status: t.status,
+    createdAt: t.createdAt, updatedAt: t.updatedAt, side,
+    email: store.userById(t.userId)?.email ?? '(removed account)',
+    messages: t.messages.map((m) => ({ id: m.id, at: m.at, staff: m.staff, author: m.authorEmail, body: m.body })),
+  };
+}
+// A ticket the caller may see: their own, or any if they're an operator. Returns which
+// side they are — an admin looking at their own ticket is still the 'user' on it.
+function ticketAccess(req: Request, res: Response): { ticket: Ticket; side: 'user' | 'staff' } | null {
+  const u = currentUser(req);
+  if (!u) { res.status(401).json({ error: 'Sign in first.' }); return null; }
+  const t = store.ticket(req.params.tid);
+  if (!t || (t.userId !== u.id && !u.admin)) { res.status(404).json({ error: 'No such ticket.' }); return null; }
+  return { ticket: t, side: u.admin && t.userId !== u.id ? 'staff' : 'user' };
+}
+
+app.get('/api/support/tickets', wrap((req, res) => {
+  const u = requireUser(req, res); if (!u) return;
+  res.json({ tickets: store.ticketsOf(u.id).map((t) => ticketSummary(t, 'user')), categories: TICKET_CATEGORIES, maxOpen: LIMITS.maxOpenTickets });
+}));
+
+app.post('/api/support/tickets', wrap((req, res) => {
+  const u = requireUser(req, res); if (!u) return;
+  const subject = String(req.body?.subject || '').trim();
+  const category = TICKET_CATEGORIES.includes(String(req.body?.category)) ? String(req.body?.category) : 'other';
+  const body = String(req.body?.message || '').trim();
+  if (subject.length < 3 || subject.length > 120) return void res.status(400).json({ error: 'Give the ticket a subject (3–120 characters).' });
+  if (body.length < 5 || body.length > 4000) return void res.status(400).json({ error: 'Describe what’s happening (5–4000 characters).' });
+  if (store.openTicketCount(u.id) >= LIMITS.maxOpenTickets)
+    return void res.status(429).json({ error: `You already have ${LIMITS.maxOpenTickets} open tickets — close one first.` });
+  const t = store.addTicket(u.id, subject, category, body, u.email);
+  res.json({ ok: true, ticket: ticketThread(t, 'user') });
+}));
+
+app.get('/api/support/tickets/:tid', wrap((req, res) => {
+  const ok = ticketAccess(req, res); if (!ok) return;
+  store.markTicketRead(ok.ticket.id, ok.side);
+  res.json(ticketThread(ok.ticket, ok.side));
+}));
+
+app.post('/api/support/tickets/:tid/reply', wrap((req, res) => {
+  const ok = ticketAccess(req, res); if (!ok) return;
+  const u = currentUser(req)!;
+  const body = String(req.body?.message || '').trim();
+  if (body.length < 1 || body.length > 4000) return void res.status(400).json({ error: 'Write a reply first (up to 4000 characters).' });
+  store.addTicketMessage(ok.ticket.id, ok.side === 'staff', u.id, u.email, body);
+  res.json({ ok: true, ticket: ticketThread(ok.ticket, ok.side) });
+}));
+
+app.post('/api/support/tickets/:tid/status', wrap((req, res) => {
+  const ok = ticketAccess(req, res); if (!ok) return;
+  const status: 'open' | 'closed' = req.body?.status === 'closed' ? 'closed' : 'open';
+  store.setTicketStatus(ok.ticket.id, status);
+  store.markTicketRead(ok.ticket.id, ok.side);
+  res.json({ ok: true, ticket: ticketThread(ok.ticket, ok.side) });
+}));
+
+app.get('/api/admin/tickets', wrap((req, res) => {
+  const a = requireAdmin(req, res); if (!a) return;
+  res.json({ tickets: store.allTickets().map((t) => ticketSummary(t, 'staff')) });
 }));
 
 // Set (or change) the SFTP password. It is stored the same way as the login
@@ -372,7 +454,13 @@ app.get('/api/meta', (_req, res) => {
 // ---------------------------------------------------------------- servers API
 app.get('/api/servers', wrap((req, res) => {
   const u = requireUser(req, res); if (!u) return;
-  res.json(store.serversOf(u.id).map(publicServer));
+  // Servers I own, then servers shared with me by another owner — each tagged with the
+  // access I hold, so the panel can dim the owner-only controls on a shared one.
+  const mine = store.serversOf(u.id).map((s) => ({ ...publicServer(s), access: 'owner' as Access }));
+  const shared = store.membershipsOf(u.id)
+    .map((m) => { const s = store.server(m.serverId); return s ? { ...publicServer(s), access: m.role } : null; })
+    .filter((x): x is NonNullable<typeof x> => x !== null);
+  res.json([...mine, ...shared]);
 }));
 
 app.post('/api/servers', wrap(async (req, res) => {
@@ -428,13 +516,88 @@ app.post('/api/servers', wrap(async (req, res) => {
   res.json(publicServer(server));
 }));
 
-// Ownership gate shared by every per-server route.
-function owned(req: Request, res: Response): { user: NonNullable<ReturnType<typeof currentUser>>; server: Server } | null {
+// Access tiers on a single server. viewer < manager < owner. The owner (and a
+// team 'manager') runs the server day to day; only the owner touches billing,
+// deletion, the domain and the team list itself.
+type Access = 'viewer' | 'manager' | 'owner';
+const ACCESS_RANK: Record<Access, number> = { viewer: 1, manager: 2, owner: 3 };
+
+// The caller's access to a server: 'owner' if they own it, else the role they were
+// invited with, else null (no claim at all). Admins are deliberately not auto-owners
+// here — they manage other people's servers through the /api/admin routes, so this
+// gate stays about genuine ownership and invited access only.
+function accessLevel(userId: string, s: Server): Access | null {
+  if (s.owner === userId) return 'owner';
+  return store.memberRole(s.id, userId);
+}
+
+// Minimum access each per-server route needs. Anything not listed is owner-only — the
+// safe default — so a newly added sensitive route can never accidentally open to a
+// member. Reads are 'viewer'; operational actions are 'manager'; billing, deletion,
+// the domain, the icon and the team list stay owner-only by omission.
+const ROUTE_ACCESS: Record<string, Access> = {
+  'GET /api/servers/:id': 'viewer',
+  'POST /api/servers/:id/start': 'manager',
+  'POST /api/servers/:id/stop': 'manager',
+  'POST /api/servers/:id/restart': 'manager',
+  'POST /api/servers/:id/command': 'manager',
+  'GET /api/servers/:id/domain': 'viewer',
+  'POST /api/servers/:id/domain/check': 'manager',
+  'GET /api/servers/:id/world': 'viewer',
+  'POST /api/servers/:id/world/rule': 'manager',
+  'POST /api/servers/:id/world/difficulty': 'manager',
+  'POST /api/servers/:id/world/quick': 'manager',
+  'GET /api/servers/:id/metrics': 'viewer',
+  'GET /api/servers/:id/analytics': 'viewer',
+  'GET /api/servers/:id/events': 'viewer',
+  'GET /api/servers/:id/alerts': 'viewer',
+  'POST /api/servers/:id/alerts/read': 'manager',
+  'POST /api/servers/:id/auto-restart': 'manager',
+  'GET /api/servers/:id/schedules': 'viewer',
+  'POST /api/servers/:id/schedules': 'manager',
+  'POST /api/servers/:id/schedules/:sid/toggle': 'manager',
+  'POST /api/servers/:id/schedules/:sid/run': 'manager',
+  'DELETE /api/servers/:id/schedules/:sid': 'manager',
+  'POST /api/servers/:id/listed': 'manager',
+  'GET /api/servers/:id/files/list': 'viewer',
+  'GET /api/servers/:id/files/read': 'viewer',
+  'PUT /api/servers/:id/files/write': 'manager',
+  'POST /api/servers/:id/files/mkdir': 'manager',
+  'POST /api/servers/:id/files/rename': 'manager',
+  'POST /api/servers/:id/files/delete': 'manager',
+  'PUT /api/servers/:id/files/upload': 'manager',
+  'GET /api/servers/:id/files/download': 'viewer',
+  'GET /api/servers/:id/backups': 'viewer',
+  'POST /api/servers/:id/backups': 'manager',
+  'POST /api/servers/:id/backups/:bid/restore': 'manager',
+  'GET /api/servers/:id/backups/:bid/download': 'viewer',
+  'DELETE /api/servers/:id/backups/:bid': 'manager',
+  'GET /api/servers/:id/players': 'viewer',
+  'POST /api/servers/:id/players/action': 'manager',
+  'GET /api/servers/:id/mods/search': 'viewer',
+  'GET /api/servers/:id/mods/versions': 'viewer',
+  'POST /api/servers/:id/mods/install': 'manager',
+  'GET /api/servers/:id/team': 'viewer',
+};
+
+// Access gate shared by every per-server route. `need` is the minimum access the route
+// requires; when omitted it comes from ROUTE_ACCESS (defaulting to owner-only), so a
+// route opts into member access explicitly and never by accident. Returns the caller's
+// actual role too, so a handler can tailor what it exposes.
+function owned(req: Request, res: Response, need?: Access): { user: NonNullable<ReturnType<typeof currentUser>>; server: Server; role: Access } | null {
   const u = currentUser(req);
   if (!u) { res.status(401).json({ error: 'Sign in first.' }); return null; }
   const s = store.server(req.params.id);
-  if (!s || s.owner !== u.id) { res.status(404).json({ error: 'No such server.' }); return null; }
-  return { user: u, server: s };
+  const role = s ? accessLevel(u.id, s) : null;
+  // A server the caller has no claim on is hidden behind the same 404 as a missing
+  // one — never confirm an id exists to someone with no access to it.
+  if (!s || !role) { res.status(404).json({ error: 'No such server.' }); return null; }
+  const min = need ?? ROUTE_ACCESS[`${req.method} ${req.route?.path ?? ''}`] ?? 'owner';
+  if (ACCESS_RANK[role] < ACCESS_RANK[min]) {
+    res.status(403).json({ error: 'That needs a higher access level — ask the server’s owner.' });
+    return null;
+  }
+  return { user: u, server: s, role };
 }
 
 app.get('/api/servers/:id', wrap(async (req, res) => {
@@ -446,7 +609,7 @@ app.get('/api/servers/:id', wrap(async (req, res) => {
     stats = await mc.stats(ok.server.id).catch(() => null);
     if (plist && plist.online > 0) store.touchServer(ok.server.id, { lastActive: Date.now() });
   }
-  res.json({ ...publicServer(ok.server), state: st, players: plist, stats, lastActive: ok.server.lastActive, alertsUnread: store.unreadAlerts(ok.server.id), autoRestart: !!ok.server.autoRestart });
+  res.json({ ...publicServer(ok.server), state: st, players: plist, stats, lastActive: ok.server.lastActive, alertsUnread: store.unreadAlerts(ok.server.id), autoRestart: !!ok.server.autoRestart, access: ok.role });
 }));
 
 app.post('/api/servers/:id/start', wrap(async (req, res) => {
@@ -834,6 +997,68 @@ app.delete('/api/servers/:id', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// ---- team: collaborators who help run one server -------------------------------
+// The owner invites another Endhost account to co-manage this one server. A 'manager'
+// runs it day to day (power, console, files, plugins, backups, schedules, world); a
+// 'viewer' watches read-only. Access is per-server and revocable, and never reaches
+// the owner's other servers, billing or account. The gate lives in owned()/ROUTE_ACCESS.
+function teamMember(m: { userId: string; role: 'manager' | 'viewer'; addedAt: number }) {
+  const u = store.userById(m.userId);
+  return { userId: m.userId, email: u?.email ?? '(removed account)', role: m.role, addedAt: m.addedAt };
+}
+
+app.get('/api/servers/:id/team', wrap((req, res) => {
+  const ok = owned(req, res); if (!ok) return; // viewer+, from ROUTE_ACCESS
+  const owner = store.userById(ok.server.owner);
+  res.json({
+    owner: { email: owner?.email ?? '' },
+    members: store.membersOf(ok.server.id).map(teamMember),
+    you: ok.role,
+    canManage: ok.role === 'owner',
+    maxMembers: LIMITS.maxTeamPerServer,
+  });
+}));
+
+app.post('/api/servers/:id/team', wrap((req, res) => {
+  const ok = owned(req, res, 'owner'); if (!ok) return;
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const role: 'manager' | 'viewer' = req.body?.role === 'viewer' ? 'viewer' : 'manager';
+  if (!EMAIL_RE.test(email)) return void res.status(400).json({ error: 'Enter the person’s account email.' });
+  const target = store.userByEmail(email);
+  if (!target) return void res.status(404).json({ error: 'No Endhost account uses that email — they need to sign up first.' });
+  if (target.id === ok.server.owner) return void res.status(400).json({ error: 'That’s the owner — they already have full access.' });
+  const already = store.memberRole(ok.server.id, target.id);
+  if (!already && store.membersOf(ok.server.id).length >= LIMITS.maxTeamPerServer)
+    return void res.status(403).json({ error: `A server can share access with up to ${LIMITS.maxTeamPerServer} people.` });
+  const m = store.addMember(ok.server.id, target.id, role, ok.user.id);
+  store.logEvent(ok.server.id, 'team', `${target.email} ${already ? 'set to' : 'added as'} ${role}`);
+  res.json({ ok: true, member: teamMember(m) });
+}));
+
+app.post('/api/servers/:id/team/:uid/role', wrap((req, res) => {
+  const ok = owned(req, res, 'owner'); if (!ok) return;
+  const role: 'manager' | 'viewer' = req.body?.role === 'viewer' ? 'viewer' : 'manager';
+  if (!store.setMemberRole(ok.server.id, req.params.uid, role))
+    return void res.status(404).json({ error: 'They’re not on this server’s team.' });
+  const u = store.userById(req.params.uid);
+  store.logEvent(ok.server.id, 'team', `${u?.email ?? 'a collaborator'} set to ${role}`);
+  res.json({ ok: true, role });
+}));
+
+app.delete('/api/servers/:id/team/:uid', wrap((req, res) => {
+  // The owner can remove anyone; a collaborator can remove only themselves (leave).
+  // 'me' is the caller's own membership — what the "Leave this server" button sends.
+  const ok = owned(req, res, 'viewer'); if (!ok) return;
+  const target = req.params.uid === 'me' ? ok.user.id : req.params.uid;
+  if (ok.role !== 'owner' && target !== ok.user.id)
+    return void res.status(403).json({ error: 'Only the owner can remove other people.' });
+  if (!store.removeMember(ok.server.id, target))
+    return void res.status(404).json({ error: 'They’re not on this server’s team.' });
+  const u = store.userById(target);
+  store.logEvent(ok.server.id, 'team', ok.role === 'owner' ? `${u?.email ?? 'a collaborator'} removed` : `${u?.email ?? 'a collaborator'} left`);
+  res.json({ ok: true });
+}));
+
 // ---------------------------------------------------------------- network API
 // The host-wide network / server selector. GET is public — the landing and panel
 // both render it — and exposes only what a player needs to pick a server: its name,
@@ -880,6 +1105,40 @@ async function networkView() {
 app.get('/api/network', wrap(async (_req, res) => {
   if (!netCache || Date.now() - netCache.at > 3000) netCache = { at: Date.now(), body: await networkView() };
   res.json(netCache.body);
+}));
+
+// ---- leaderboards: a real board of the listed network ---------------------------
+// Every number here is measured, not invented: online-now from a live RCON `list`,
+// the 7-day player peak from the persisted metrics history, and uptime from how long
+// the container has actually been running. Unlisted (private) servers are left out,
+// exactly like the public selector; the caller's own rows are flagged so the panel
+// can point out where they stand.
+let lbCache: { at: number; body: { servers: Array<{ id: string; name: string; icon: string; owner: string; software: string; softwareLabel: string; version: string; running: boolean; online: number; peak7d: number; uptimeMs: number }>; onlineNow: number; awake: number; peakServer: number; at: number } } | null = null;
+async function leaderboardView() {
+  const rows = await Promise.all(store.listedServers().map(async (s) => {
+    const st = await mc.state(s.id).catch(() => null);
+    let online = 0;
+    if (st?.running) { const p = await mc.players(s.id).catch(() => null); if (p) online = p.online; }
+    const long = metrics.longHistory(s.id);
+    const peak7d = long.reduce((mx, p) => Math.max(mx, p.players || 0), online);
+    const startedAt = st?.startedAt ? Date.parse(st.startedAt) : 0;
+    const uptimeMs = st?.running && startedAt ? Math.max(0, Date.now() - startedAt) : 0;
+    const sw = softwareById(s.software) ?? softwareById('paper')!;
+    return { id: s.id, name: s.name, icon: iconOf(s), owner: s.owner, software: sw.id, softwareLabel: sw.label, version: s.version, running: !!st?.running, online, peak7d, uptimeMs };
+  }));
+  // Busiest first: players online now, then the 7-day peak, then awake before asleep.
+  rows.sort((a, b) => b.online - a.online || b.peak7d - a.peak7d || Number(b.running) - Number(a.running) || a.name.localeCompare(b.name));
+  return { servers: rows, onlineNow: rows.reduce((n, r) => n + r.online, 0), awake: rows.filter((r) => r.running).length, peakServer: rows.reduce((mx, r) => Math.max(mx, r.peak7d), 0), at: Date.now() };
+}
+
+app.get('/api/leaderboards', wrap(async (req, res) => {
+  const u = requireUser(req, res); if (!u) return;
+  if (!lbCache || Date.now() - lbCache.at > 5000) lbCache = { at: Date.now(), body: await leaderboardView() };
+  const b = lbCache.body;
+  res.json({
+    onlineNow: b.onlineNow, awake: b.awake, peakServer: b.peakServer, total: b.servers.length, at: b.at,
+    servers: b.servers.map(({ owner, ...r }) => ({ ...r, mine: owner === u.id })),
+  });
 }));
 
 // Choose the item this server wears in the selector. Free icons are always allowed;
@@ -1687,8 +1946,13 @@ httpServer.on('upgrade', async (req, socket, head) => {
   const m = url.pathname.match(/^\/api\/servers\/([\w-]+)\/console$/);
   if (!m) { socket.destroy(); return; }
   const server = store.server(m[1]);
-  // A server's console: its owner, or any admin (admins reach every console).
-  if (!server || (server.owner !== user.id && !user.admin)) { socket.destroy(); return; }
+  // A server's console: its owner, an invited collaborator, or any admin (admins reach
+  // every console). A 'viewer' collaborator may watch but not type; a 'manager' may type.
+  const role: Access | null = !server ? null
+    : (server.owner === user.id || user.admin) ? 'owner'
+    : store.memberRole(server.id, user.id);
+  if (!server || !role) { socket.destroy(); return; }
+  const canSend = ACCESS_RANK[role] >= ACCESS_RANK.manager;
 
   wss.handleUpgrade(req, socket, head, async (ws) => {
     let stop: (() => void) | null = null;
@@ -1712,6 +1976,7 @@ httpServer.on('upgrade', async (req, socket, head) => {
     ws.on('message', async (data) => {
       const cmd = String(data).replace(/[\r\n]+$/, '').trim();
       if (!cmd) return;
+      if (!canSend) { if (ws.readyState === ws.OPEN) ws.send('[endhost] you have view-only access to this console.\n'); return; }
       try {
         if (await mc.consoleReady(server.id)) { await mc.send(server.id, cmd); return; }
         const out = await mc.rcon(server.id, cmd);

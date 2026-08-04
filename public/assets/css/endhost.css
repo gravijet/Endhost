@@ -1062,6 +1062,89 @@ select.input { cursor: url('../img/crosshair.png') 16 16, crosshair; }
 
 /* unread-alert count on a server's Alerts tab */
 .sv-nav-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; margin-left: 4px; padding: 0 4px; font-size: 11px; line-height: 1; color: var(--mc-white); background: #7a1f1f; border: 2px solid var(--outline); text-shadow: 1px 1px 0 #000; flex-shrink: 0; }
+/* unread count on a rail item (Support, admin queue) */
+.side-nav-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; margin-left: auto; padding: 0 4px; font-size: 11px; line-height: 1; color: var(--mc-white); background: #7a1f1f; border: 2px solid var(--outline); text-shadow: 1px 1px 0 #000; flex-shrink: 0; }
+/* "shared with you" marker on a server in the rail */
+.srv-shared { margin-left: auto; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--portal); text-shadow: 2px 2px 0 #08322a; border: 2px solid rgba(53, 211, 176, 0.35); padding: 0 5px; line-height: 16px; flex-shrink: 0; }
+
+/* ============================================================ team / leaderboards / support
+   Three real roadmap surfaces, same pixel grammar: 2px bevels, hard text-shadows,
+   the teal --portal accent and small uppercase --mc-yellow/--mc-gray labels. */
+
+/* ---- team: per-server collaborators ---- */
+.team-list { display: flex; flex-direction: column; }
+.team-row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 2px solid rgba(255, 255, 255, 0.05); }
+.team-row:last-child { border-bottom: none; }
+.team-av { flex-shrink: 0; width: 32px; height: 32px; display: grid; place-items: center; font-size: 16px; color: var(--mc-white); background: var(--entry-hi); border: 2px solid var(--outline); text-shadow: 2px 2px 0 #000; }
+.team-who { flex: 1 1 auto; min-width: 0; }
+.team-email { font-size: 15px; color: var(--mc-white); text-shadow: 2px 2px 0 #3f3f3f; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.team-role { margin-top: 2px; font-size: 12px; }
+.team-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.team-role-sel { width: auto; min-width: 108px; font-size: 14px; padding: 5px 8px; }
+.team-tag { font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--mc-gray); text-shadow: 2px 2px 0 #2a2a2a; border: 2px solid var(--slot-lo); padding: 2px 8px; }
+.team-tag.owner { color: var(--mc-yellow); text-shadow: 2px 2px 0 #3f3f15; border-color: rgba(255, 255, 85, 0.35); }
+.team-empty { padding: 12px 16px; }
+.team-leave { padding: 12px 16px; border-top: 2px solid rgba(255, 255, 255, 0.05); }
+.team-form-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.team-form-row .input { flex: 1 1 200px; }
+.team-form-row select.input { flex: 1 1 160px; }
+.team-form-row .btn { flex-shrink: 0; }
+
+/* ---- leaderboards: the real network board ---- */
+.lb-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px; }
+.lb-stat { padding: 16px; text-align: center; }
+.lb-stat-v { font-size: 28px; color: var(--mc-yellow); text-shadow: 3px 3px 0 #3f3f15; line-height: 1.1; }
+.lb-stat-k { margin-top: 6px; }
+.lb-board { display: flex; flex-direction: column; gap: 6px; }
+.lb-row { display: grid; grid-template-columns: 40px 1fr 84px 92px 92px; gap: 12px; align-items: center; padding: 12px 16px; }
+.lb-row.lb-head { padding: 4px 16px; background: none; border: none; box-shadow: none; }
+.lb-head .lb-rank, .lb-head .lb-name, .lb-head .lb-col { font-size: 12px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--mc-gray); text-shadow: 2px 2px 0 #2a2a2a; }
+.lb-row.mine { border-color: var(--portal); box-shadow: inset 0 0 0 1px rgba(53, 211, 176, 0.18); }
+.lb-row.top .lb-rank { color: var(--mc-yellow); text-shadow: 2px 2px 0 #3f3f15; }
+.lb-rank { font-size: 20px; color: var(--mc-white); text-shadow: 2px 2px 0 #3f3f3f; text-align: center; }
+.lb-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.lb-name .mc-item { width: 26px; height: 26px; flex-shrink: 0; }
+.lb-name-txt { min-width: 0; }
+.lb-title { font-size: 15px; color: var(--mc-white); text-shadow: 2px 2px 0 #3f3f3f; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-you { margin-left: 8px; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--portal); text-shadow: 2px 2px 0 #08322a; border: 2px solid rgba(53, 211, 176, 0.4); padding: 0 5px; }
+.lb-sub { margin-top: 2px; font-size: 12px; }
+.lb-col { font-size: 15px; color: var(--mc-white); text-shadow: 2px 2px 0 #3f3f3f; display: flex; align-items: center; gap: 6px; }
+.lb-col .dot { width: 9px; height: 9px; flex-shrink: 0; }
+.lb-none { text-align: center; }
+
+/* ---- support: real tickets ---- */
+.sup { display: flex; flex-direction: column; gap: 12px; }
+.sup-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.sup-list { display: flex; flex-direction: column; gap: 8px; }
+.sup-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; cursor: url('../img/crosshair.png') 16 16, pointer; }
+.sup-card.unread { border-color: rgba(53, 211, 176, 0.4); }
+.sup-card-main { min-width: 0; flex: 1 1 auto; }
+.sup-card-subj { display: flex; align-items: center; gap: 8px; font-size: 15px; color: var(--mc-white); text-shadow: 2px 2px 0 #3f3f3f; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sup-dot { flex-shrink: 0; width: 8px; height: 8px; background: var(--portal); box-shadow: 0 0 6px rgba(53, 211, 176, 0.6); }
+.sup-card-meta { margin-top: 4px; font-size: 12px; }
+.sup-pill { flex-shrink: 0; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; padding: 2px 8px; border: 2px solid var(--outline); text-shadow: 2px 2px 0 #000; }
+.sup-st-open { color: var(--mc-gold); border-color: rgba(255, 170, 0, 0.4); }
+.sup-st-answered { color: var(--portal); border-color: rgba(53, 211, 176, 0.4); }
+.sup-st-closed { color: var(--mc-gray); border-color: var(--slot-lo); }
+.sup-empty { text-align: center; }
+.sup-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+.sup-field { display: flex; flex-direction: column; gap: 6px; }
+.sup-field-k { margin: 0; }
+.sup-textarea { resize: vertical; line-height: 1.5; }
+.sup-form-actions, .sup-reply-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+.sup-thread-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.sup-thread-title h3 { color: var(--mc-white); text-shadow: 2px 2px 0 #000; font-size: 20px; margin-bottom: 4px; word-break: break-word; }
+.sup-thread-meta { font-size: 12px; }
+.sup-feed { display: flex; flex-direction: column; gap: 10px; max-height: 52vh; overflow-y: auto; padding: 4px; }
+.sup-msg { max-width: 82%; padding: 12px 14px; background: var(--entry); border: 2px solid var(--outline); box-shadow: inset 0 2px 0 rgba(180, 168, 224, 0.10), 0 2px 0 rgba(0, 0, 0, 0.5); }
+.sup-msg.user { align-self: flex-end; border-color: rgba(53, 211, 176, 0.35); }
+.sup-msg.staff { align-self: flex-start; background: var(--entry-hi); }
+.sup-msg-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.sup-msg-who { font-size: 13px; color: var(--mc-yellow); text-shadow: 2px 2px 0 #3f3f15; }
+.sup-msg.user .sup-msg-who { color: var(--portal); text-shadow: 2px 2px 0 #08322a; }
+.sup-msg-when { font-size: 11px; flex-shrink: 0; }
+.sup-msg-body { font-size: 14px; color: var(--mc-white); text-shadow: 2px 2px 0 #3f3f3f; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.sup-reply { display: flex; flex-direction: column; gap: 0; }
 
 @media (max-width: 620px) {
   .store-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
@@ -1071,4 +1154,15 @@ select.input { cursor: url('../img/crosshair.png') 16 16, crosshair; }
   .console-filter { flex: 1 1 auto; width: auto; }
   .al-auto { flex-direction: column; align-items: flex-start; }
   .an-svg, .an-plot-empty { height: 108px; }
+  /* Leaderboards: drop the two wide numeric columns to a compact 3-column row so a
+     phone shows rank, server, and online without a horizontal scroll. */
+  .lb-stats { grid-template-columns: 1fr; }
+  .lb-row { grid-template-columns: 30px 1fr 62px; gap: 8px; padding: 11px 12px; }
+  .lb-row .lb-col:nth-child(4), .lb-row .lb-col:nth-child(5),
+  .lb-head .lb-col:nth-child(4), .lb-head .lb-col:nth-child(5) { display: none; }
+  /* Support + team stack their form/rows */
+  .sup-form-grid { grid-template-columns: 1fr; }
+  .sup-msg { max-width: 92%; }
+  .team-form-row .input, .team-form-row select.input { flex-basis: 100%; }
+  .team-role-sel { min-width: 92px; }
 }

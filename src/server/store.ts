@@ -106,6 +106,45 @@ export interface Server {
   autoRestart?: boolean;
 }
 
+// A collaborator invited to help run one server, without being handed the owner's
+// login. `role` decides how far they reach: 'viewer' sees status, console output,
+// files and metrics read-only; 'manager' also runs every operational action (power,
+// commands, files, plugins, backups, schedules, world) — but never billing, deletion,
+// the domain, or the team list itself, which stay with the owner. One row per
+// (server, user). Removed with the server.
+export interface Member {
+  serverId: string;
+  userId: string;
+  role: 'manager' | 'viewer';
+  addedAt: number;
+  addedBy: string;   // the owner's user id at the time of the invite
+}
+
+// A support conversation between one account and the operators. Messages are
+// append-only; `status` tracks where it stands. `userReadAt` / `staffReadAt` record
+// the last time each side opened the thread — all that's needed to count unread
+// replies for a badge, without a per-message read flag.
+export interface TicketMessage {
+  id: string;
+  at: number;
+  staff: boolean;       // written by an operator (admin) rather than the account
+  authorId: string;
+  authorEmail: string;  // captured at write time so the thread still reads right later
+  body: string;
+}
+export interface Ticket {
+  id: string;
+  userId: string;
+  subject: string;
+  category: string;     // 'server' | 'billing' | 'network' | 'account' | 'other'
+  status: 'open' | 'answered' | 'closed';
+  createdAt: number;
+  updatedAt: number;
+  userReadAt: number;
+  staffReadAt: number;
+  messages: TicketMessage[];
+}
+
 // One notable moment in a server's life the owner should know about: a crash, an
 // out-of-memory kill, an automatic restart, sustained high memory, or a recovery.
 // Recorded by the alerts monitor from real container state — never invented — and
@@ -213,6 +252,8 @@ interface DB {
   schedules: Schedule[];
   events: ServerEvent[];
   alerts: Alert[];
+  members: Member[];
+  tickets: Ticket[];
   network: Network | null;
   // Host-wide maintenance: when true the operator has shut every Minecraft-facing
   // service down (proxy, subdomain router, all servers) to free ports 25565–25580.
@@ -229,12 +270,12 @@ function load(): DB {
   try {
     if (existsSync(FILE)) {
       const d = JSON.parse(readFileSync(FILE, 'utf8')) as Partial<DB>;
-      return { users: d.users ?? {}, sessions: d.sessions ?? {}, servers: d.servers ?? {}, ledger: d.ledger ?? [], backups: d.backups ?? [], schedules: d.schedules ?? [], events: d.events ?? [], alerts: d.alerts ?? [], network: d.network ?? null, maintenance: d.maintenance ?? false };
+      return { users: d.users ?? {}, sessions: d.sessions ?? {}, servers: d.servers ?? {}, ledger: d.ledger ?? [], backups: d.backups ?? [], schedules: d.schedules ?? [], events: d.events ?? [], alerts: d.alerts ?? [], members: d.members ?? [], tickets: d.tickets ?? [], network: d.network ?? null, maintenance: d.maintenance ?? false };
     }
   } catch {
     /* corrupt or unreadable — start clean rather than crash the service */
   }
-  return { users: {}, sessions: {}, servers: {}, ledger: [], backups: [], schedules: [], events: [], alerts: [], network: null, maintenance: false };
+  return { users: {}, sessions: {}, servers: {}, ledger: [], backups: [], schedules: [], events: [], alerts: [], members: [], tickets: [], network: null, maintenance: false };
 }
 
 function persist(): void {
@@ -341,7 +382,39 @@ export const store = {
     db.schedules = db.schedules.filter((s) => s.serverId !== id);
     db.events = db.events.filter((e) => e.serverId !== id);
     db.alerts = db.alerts.filter((a) => a.serverId !== id);
+    db.members = db.members.filter((m) => m.serverId !== id);
     persist();
+  },
+
+  // server access — collaborators the owner invited to help run one server.
+  membersOf(serverId: string): Member[] {
+    return db.members.filter((m) => m.serverId === serverId).sort((a, b) => a.addedAt - b.addedAt);
+  },
+  // Every membership this user holds (servers shared *with* them, not ones they own).
+  membershipsOf(userId: string): Member[] {
+    return db.members.filter((m) => m.userId === userId);
+  },
+  memberRole(serverId: string, userId: string): Member['role'] | null {
+    return db.members.find((m) => m.serverId === serverId && m.userId === userId)?.role ?? null;
+  },
+  addMember(serverId: string, userId: string, role: Member['role'], addedBy: string): Member {
+    const existing = db.members.find((m) => m.serverId === serverId && m.userId === userId);
+    if (existing) { existing.role = role; persist(); return existing; }
+    const m: Member = { serverId, userId, role, addedAt: Date.now(), addedBy };
+    db.members.push(m);
+    persist();
+    return m;
+  },
+  setMemberRole(serverId: string, userId: string, role: Member['role']): boolean {
+    const m = db.members.find((x) => x.serverId === serverId && x.userId === userId);
+    if (!m) return false;
+    m.role = role; persist(); return true;
+  },
+  removeMember(serverId: string, userId: string): boolean {
+    const before = db.members.length;
+    db.members = db.members.filter((m) => !(m.serverId === serverId && m.userId === userId));
+    if (db.members.length === before) return false;
+    persist(); return true;
   },
 
   // schedules
@@ -460,6 +533,73 @@ export const store = {
     if (!u) return;
     const owned = u.unlockedIcons ?? [];
     if (!owned.includes(icon)) { u.unlockedIcons = [...owned, icon]; persist(); }
+  },
+
+  // support tickets — a real conversation between an account and the operators.
+  ticketsOf(userId: string): Ticket[] {
+    return db.tickets.filter((t) => t.userId === userId).sort((a, b) => b.updatedAt - a.updatedAt);
+  },
+  allTickets(): Ticket[] {
+    return [...db.tickets].sort((a, b) => b.updatedAt - a.updatedAt);
+  },
+  ticket(id: string): Ticket | undefined {
+    return db.tickets.find((t) => t.id === id);
+  },
+  openTicketCount(userId: string): number {
+    return db.tickets.reduce((n, t) => n + (t.userId === userId && t.status !== 'closed' ? 1 : 0), 0);
+  },
+  addTicket(userId: string, subject: string, category: string, body: string, authorEmail: string): Ticket {
+    const now = Date.now();
+    const t: Ticket = {
+      id: `tk_${randomBytes(6).toString('hex')}`, userId, subject, category,
+      status: 'open', createdAt: now, updatedAt: now, userReadAt: now, staffReadAt: 0,
+      messages: [{ id: `tm_${randomBytes(5).toString('hex')}`, at: now, staff: false, authorId: userId, authorEmail, body }],
+    };
+    db.tickets.push(t);
+    if (db.tickets.length > 4000) db.tickets.splice(0, db.tickets.length - 4000);
+    persist();
+    return t;
+  },
+  addTicketMessage(id: string, staff: boolean, authorId: string, authorEmail: string, body: string): TicketMessage | null {
+    const t = db.tickets.find((x) => x.id === id);
+    if (!t) return null;
+    const now = Date.now();
+    const msg: TicketMessage = { id: `tm_${randomBytes(5).toString('hex')}`, at: now, staff, authorId, authorEmail, body };
+    t.messages.push(msg);
+    if (t.messages.length > 200) t.messages.splice(0, t.messages.length - 200);
+    t.updatedAt = now;
+    // A reply reopens a closed thread and flips whose turn it is. The author's own
+    // side is marked read (they just wrote it); the other side now has something new.
+    t.status = staff ? 'answered' : 'open';
+    if (staff) t.staffReadAt = now; else t.userReadAt = now;
+    persist();
+    return msg;
+  },
+  setTicketStatus(id: string, status: Ticket['status']): void {
+    const t = db.tickets.find((x) => x.id === id);
+    if (!t || t.status === status) return;
+    t.status = status; t.updatedAt = Date.now(); persist();
+  },
+  markTicketRead(id: string, side: 'user' | 'staff'): void {
+    const t = db.tickets.find((x) => x.id === id);
+    if (!t) return;
+    if (side === 'user') t.userReadAt = Date.now(); else t.staffReadAt = Date.now();
+    persist();
+  },
+  // A ticket has an unread reply for a side when the other side wrote after that
+  // side last opened it. Drives the Support badge (user) and admin badge (staff).
+  ticketHasUnread(t: Ticket, side: 'user' | 'staff'): boolean {
+    // Unread for a side = a message from the OTHER side landed after this side last
+    // opened the thread. The user is waiting on staff messages (staff === true); staff
+    // is waiting on the user's (staff === false) — i.e. m.staff === (side === 'user').
+    const cutoff = side === 'user' ? t.userReadAt : t.staffReadAt;
+    return t.messages.some((m) => m.at > cutoff && m.staff === (side === 'user'));
+  },
+  ticketUnreadForUser(userId: string): number {
+    return db.tickets.reduce((n, t) => n + (t.userId === userId && this.ticketHasUnread(t, 'user') ? 1 : 0), 0);
+  },
+  ticketUnreadForStaff(): number {
+    return db.tickets.reduce((n, t) => n + (this.ticketHasUnread(t, 'staff') ? 1 : 0), 0);
   },
 
   // network (the one host-wide Velocity proxy; the container is owned by network.ts)

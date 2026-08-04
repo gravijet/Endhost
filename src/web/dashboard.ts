@@ -1,7 +1,7 @@
 import { wireClicks, sound } from './sound.js';
 import { el, $, clear, toast } from './dom.js';
 import { motdToHtml, fmtBytes, ago } from './mc.js';
-import { api, ApiError, type Meta, type PremiumIcon, type ServerDetail, type ServerSummary, type LiveState, type FileEntry, type DirListing, type SftpInfo, type ModHit, type Me, type CreditsInfo, type AdminUser, type AdminServer, type Tx, type Backup, type Roster, type PlayerAction, type WorldInfo, type GameRuleDef, type DomainInfo, type DomainCheck, type MetricsInfo, type AnalyticsInfo, type LongPoint, type Alert, type AlertsInfo, type SchedulesInfo, type Schedule, type ScheduleActionDef, type NetworkServer, type AdminNetworkServer, type ProxyAction, type MaintenanceInfo, type Rank, type RankAssignment, type RanksInfo } from './api.js';
+import { api, ApiError, type Meta, type PremiumIcon, type ServerDetail, type ServerSummary, type Access, type LiveState, type FileEntry, type DirListing, type SftpInfo, type ModHit, type Me, type CreditsInfo, type AdminUser, type AdminServer, type Tx, type Backup, type Roster, type PlayerAction, type WorldInfo, type GameRuleDef, type DomainInfo, type DomainCheck, type MetricsInfo, type AnalyticsInfo, type LongPoint, type Alert, type AlertsInfo, type SchedulesInfo, type Schedule, type ScheduleActionDef, type NetworkServer, type AdminNetworkServer, type ProxyAction, type MaintenanceInfo, type Rank, type RankAssignment, type RanksInfo, type TeamInfo, type TeamMember, type TicketSummary, type TicketThread, type TicketsInfo, type LeaderboardInfo, type LeaderRow } from './api.js';
 
 wireClicks();
 
@@ -37,7 +37,7 @@ type Route =
   | { kind: 'stats' }
   | { kind: 'support' }
   | { kind: 'account' }
-  | { kind: 'admin'; section: 'accounts' | 'servers' | 'ranks' };
+  | { kind: 'admin'; section: 'accounts' | 'servers' | 'ranks' | 'tickets' };
 
 type ProxySection = 'console' | 'files' | 'settings';
 const PROXY_SECTIONS: ProxySection[] = ['console', 'files', 'settings'];
@@ -59,7 +59,7 @@ function parseHash(): Route {
   if (parts[0] === 'stats') return { kind: 'stats' };
   if (parts[0] === 'support') return { kind: 'support' };
   if (parts[0] === 'account') return { kind: 'account' };
-  if (parts[0] === 'admin') return { kind: 'admin', section: parts[1] === 'servers' ? 'servers' : parts[1] === 'ranks' ? 'ranks' : 'accounts' };
+  if (parts[0] === 'admin') return { kind: 'admin', section: parts[1] === 'servers' ? 'servers' : parts[1] === 'ranks' ? 'ranks' : parts[1] === 'tickets' ? 'tickets' : 'accounts' };
   return { kind: 'new' };
 }
 
@@ -151,7 +151,7 @@ async function showApp(): Promise<void> {
     el('div', { class: 'side-nav' },
       el('div', { class: 'side-group' }, 'Network'),
       navLink('network', '#/network', '⬡', 'Network'),
-      navLink('stats', '#/stats', '▤', 'Leaderboards', true),
+      navLink('stats', '#/stats', '▤', 'Leaderboards'),
       ...(me?.admin ? [navLink('proxy', '#/proxy/console', '⇄', 'Proxy')] : []),
       el('div', { class: 'side-group' }, 'Shop'),
       navLink('store', '#/store', '✦', 'Store'),
@@ -159,8 +159,8 @@ async function showApp(): Promise<void> {
       el('div', { class: 'side-group' }, 'Your account'),
       navLink('account', '#/account', '☰', 'Account'),
       navLink('docs', '#/docs', '?', 'Docs & commands'),
-      navLink('support', '#/support', '✉', 'Support', true),
-      ...(me?.admin ? [el('div', { class: 'side-group' }, 'Staff'), navLink('admin', '#/admin/accounts', '⚙', 'Admin')] : []),
+      navLink('support', '#/support', '✉', 'Support', { badge: me?.supportUnread }),
+      ...(me?.admin ? [el('div', { class: 'side-group' }, 'Staff'), navLink('admin', '#/admin/accounts', '⚙', 'Admin', { badge: me?.ticketQueue })] : []),
     ),
     sideFoot,
   );
@@ -178,10 +178,12 @@ async function showApp(): Promise<void> {
   }
 }
 
-function navLink(kind: string, href: string, glyph: string, label: string, soon = false): HTMLElement {
-  return el('a', { class: 'side-nav-item' + (soon ? ' soon' : ''), 'data-nav': kind, href, onclick: () => sound.click() },
+function navLink(kind: string, href: string, glyph: string, label: string, opts: { soon?: boolean; badge?: number } = {}): HTMLElement {
+  const n = opts.badge ?? 0;
+  const badge = n > 0 ? el('span', { class: 'side-nav-badge' }, n > 9 ? '9+' : String(n)) : false;
+  return el('a', { class: 'side-nav-item' + (opts.soon ? ' soon' : ''), 'data-nav': kind, href, onclick: () => sound.click() },
     el('span', { class: 'gl' }, glyph), el('span', { class: 'lbl' }, label),
-    soon ? el('span', { class: 'soon-tag' }, 'soon') : '');
+    opts.soon ? el('span', { class: 'soon-tag' }, 'soon') : false, badge);
 }
 
 function buildFoot(): void {
@@ -202,12 +204,14 @@ function buildSidebar(): void {
     serverDots.set(s.id, dot);
     const cached = detailCache.get(s.id);
     if (cached) setDotFrom(dot, cached.state);
+    const shared = s.access && s.access !== 'owner';
     sideList.append(el('a', { class: 'srv-item', 'data-srv': s.id, href: serverHash(s.id, 'overview'), onclick: () => sound.click() },
       dot,
       el('span', { class: 'srv-text' },
         el('span', { class: 'srv-name' }, s.name),
         el('span', { class: 'srv-sub' }, s.subdomain ? `${s.subdomain}.example.invalid` : `port ${s.port}`),
       ),
+      shared ? el('span', { class: 'srv-shared', title: `Shared with you · ${accessLabel(s.access!)}` }, s.access === 'viewer' ? 'view' : 'shared') : false,
     ));
     void api.server(s.id).then((d) => { detailCache.set(s.id, d); setDot(s.id, d.state); }).catch(() => {});
   }
@@ -242,6 +246,21 @@ async function loadServers(): Promise<void> {
   await refreshMe();
   buildFoot();
   buildSidebar();
+  updateNavBadges();
+}
+
+// Keep the Support (and admin queue) unread badges in the rail in sync with `me`,
+// creating or clearing the little count without rebuilding the whole nav.
+function updateNavBadges(): void {
+  const set = (kind: string, n: number): void => {
+    const item = sideNav?.querySelector(`.side-nav-item[data-nav="${kind}"]`);
+    if (!item) return;
+    let b = item.querySelector('.side-nav-badge') as HTMLElement | null;
+    if (n > 0) { if (!b) { b = el('span', { class: 'side-nav-badge' }); item.append(b); } b.textContent = n > 9 ? '9+' : String(n); }
+    else if (b) b.remove();
+  };
+  set('support', me?.supportUnread ?? 0);
+  if (me?.admin) set('admin', me?.ticketQueue ?? 0);
 }
 
 // The router: swaps only the content pane; the rail stays put.
@@ -963,7 +982,7 @@ function serverSections(s: ServerSummary): NavDef[] {
     { id: 'access', label: 'Access', glyph: '⇄' },
     { id: 'analytics', label: 'Analytics', glyph: '◔' },
     { id: 'alerts', label: 'Alerts', glyph: '⚑' },
-    { id: 'team', label: 'Team', glyph: '⧉', soon: true },
+    { id: 'team', label: 'Team', glyph: '⧉' },
     { id: 'settings', label: 'Settings', glyph: '⚙' },
   ];
   return defs;
@@ -986,7 +1005,7 @@ function sectionHead(summary: ServerSummary, section: ServerSection): HTMLElemen
     network:  { eyebrow: 'Connection', title: 'Address',       desc: 'The address players join by, and a custom domain of your own if you want one.' },
     access:   { eyebrow: 'Connection', title: 'Access',        desc: 'SFTP details for moving whole folders with FileZilla, WinSCP or Cyberduck.' },
     analytics:{ eyebrow: 'Insights',   title: 'Analytics',     desc: 'Players, CPU and memory over the last day to the last week — real samples, kept across restarts.' },
-    team:     { eyebrow: 'Access',     title: 'Team',          desc: 'Invite trusted people to co-manage this server, with roles — coming soon.' },
+    team:     { eyebrow: 'Access',     title: 'Team',          desc: 'Invite trusted people to co-manage this server from their own login — each with a role that decides what they can touch.' },
     alerts:   { eyebrow: 'Automation', title: 'Alerts',        desc: 'A log of the moments that matter — crashes, out-of-memory kills, back-online — with auto-restart on crash.' },
     settings: { eyebrow: 'Server',     title: 'Settings',      desc: 'The facts about this server, and the danger zone.' },
   };
@@ -1000,6 +1019,9 @@ function sectionHead(summary: ServerSummary, section: ServerSection): HTMLElemen
 
 function renderServer(summary: ServerSummary, section: ServerSection): HTMLElement {
   const root = el('div', { class: 'sv' });
+  // Owner (or a record with no access field — always one of your own) sees the
+  // billing/delete/domain controls; an invited manager/viewer does not.
+  const isOwner = (summary.access ?? 'owner') === 'owner';
   const pill = el('span', { class: 'state-pill' });
   const controls = el('div', { class: 'sv-controls' });
 
@@ -1045,19 +1067,12 @@ function renderServer(summary: ServerSummary, section: ServerSection): HTMLEleme
   else if (section === 'plugins') body = renderMarket(summary.id, summary.kind as 'plugins' | 'mods');
   else if (section === 'backups') body = renderBackups(summary);
   else if (section === 'schedule') body = renderSchedule(summary.id);
-  else if (section === 'network') body = networkPane(summary);
+  else if (section === 'network') body = networkPane(summary, isOwner);
   else if (section === 'access') body = renderSftp(summary.id);
   else if (section === 'analytics') body = renderAnalytics(summary);
   else if (section === 'alerts') body = renderAlerts(summary);
-  else if (section === 'team') body = comingSoon('Share this server with your team',
-    'Invite trusted people to help run this server without handing over your account — each with a role that decides what they can touch.',
-    [
-      ['Invites', 'Add someone by email; they manage this server from their own login.'],
-      ['Roles', 'Operator, builder or viewer — scoped to console, files, power and more.'],
-      ['Audit log', 'A record of who did what, so a shared server stays accountable.'],
-      ['Per-server', 'Access is granted one server at a time — never your whole account.'],
-    ]);
-  else body = settingsPane(summary);
+  else if (section === 'team') body = renderTeam(summary, isOwner);
+  else body = settingsPane(summary, isOwner);
 
   root.append(head, nav, el('div', { class: 'sv-body' }, sectionHead(summary, section), body));
 
@@ -1087,16 +1102,19 @@ function renderServer(summary: ServerSummary, section: ServerSection): HTMLEleme
     } else {
       controls.append(powerBtn('▶ Start', 'btn-portal', () => api.start(summary.id)));
     }
-    const aoOn = d.alwaysOn;
-    controls.append(el('button', {
-      class: `btn btn-sm ${aoOn ? 'btn-portal' : 'btn-ghost'}`,
-      title: aoOn ? 'Paid to stay awake — click to let it sleep again' : 'Keep awake past idle (costs credits/hour)',
-      onclick: async (e: Event) => {
-        const b = e.currentTarget as HTMLElement; b.classList.add('is-disabled');
-        try { await api.alwaysOn(summary.id, !aoOn); await refreshMe(); await refresh(); }
-        catch (err) { toast(fail(err), 'err'); b.classList.remove('is-disabled'); }
-      },
-    }, aoOn ? '☀ Always-on' : '☾ Always-on'));
+    // Always-on is billed to the owner's Guthaben, so only the owner toggles it.
+    if (isOwner) {
+      const aoOn = d.alwaysOn;
+      controls.append(el('button', {
+        class: `btn btn-sm ${aoOn ? 'btn-portal' : 'btn-ghost'}`,
+        title: aoOn ? 'Paid to stay awake — click to let it sleep again' : 'Keep awake past idle (costs credits/hour)',
+        onclick: async (e: Event) => {
+          const b = e.currentTarget as HTMLElement; b.classList.add('is-disabled');
+          try { await api.alwaysOn(summary.id, !aoOn); await refreshMe(); await refresh(); }
+          catch (err) { toast(fail(err), 'err'); b.classList.remove('is-disabled'); }
+        },
+      }, aoOn ? '☀ Always-on' : '☾ Always-on'));
+    }
   }
 
   async function refresh(): Promise<void> {
@@ -1605,19 +1623,19 @@ function buildConsole(serverId: string): { node: HTMLElement; connect: () => voi
 }
 
 // ---- network pane: the endhost address, a custom domain, and how to hand it out
-function networkPane(summary: ServerSummary): HTMLElement {
+function networkPane(summary: ServerSummary, isOwner = true): HTMLElement {
   const addr = el('div', { class: 'entry pad' },
     el('div', { class: 'label mb' }, 'Endhost address'),
     el('p', { class: 'set-lead t-mute sh' }, summary.subdomain
-      ? 'The whole address your friends type — no port needed. Rename the subdomain to anything free.'
+      ? (isOwner ? 'The whole address your friends type — no port needed. Rename the subdomain to anything free.' : 'The whole address players type — no port needed.')
       : 'The direct address for your server. Connect on a non-proxied host.'),
-    renderAddress(summary, true, false),
+    renderAddress(summary, isOwner, false),
   );
   const help = el('div', { class: 'entry pad' },
     el('div', { class: 'label mb' }, 'Handing it out'),
     el('p', { class: 'set-lead t-mute sh', style: 'margin:0' }, 'In Minecraft, open Multiplayer → Add Server, paste an address above, and Join. Anyone with it can connect while the server is awake; if it is asleep, the first join wakes it and they reconnect after ~30 seconds.'),
   );
-  return el('div', { class: 'ov' }, addr, renderDomain(summary), help);
+  return el('div', { class: 'ov' }, addr, renderDomain(summary, isOwner), help);
 }
 
 // ---- custom domain: point your own name here, verified against live DNS
@@ -1635,10 +1653,10 @@ function copyField(label: string, value: string): HTMLElement {
   );
 }
 
-function renderDomain(summary: ServerSummary): HTMLElement {
+function renderDomain(summary: ServerSummary, editable = true): HTMLElement {
   const body = el('div', { class: 'dom-body' }, el('div', { class: 'loading blink', style: 'padding:14px 16px' }, 'Loading '));
   const card = el('div', { class: 'entry dom' },
-    el('div', { class: 'card-head' }, el('span', { class: 'k' }, 'Custom domain'), el('span', { class: 'k t-mute' }, 'point your own name here')),
+    el('div', { class: 'card-head' }, el('span', { class: 'k' }, 'Custom domain'), el('span', { class: 'k t-mute' }, editable ? 'point your own name here' : 'set by the owner')),
     body,
   );
 
@@ -1705,6 +1723,13 @@ function renderDomain(summary: ServerSummary): HTMLElement {
     let info: DomainInfo;
     try { info = await api.domain(summary.id); } catch (e) { clear(body); body.append(el('div', { class: 'fm-msg err' }, fail(e))); return; }
     clear(body);
+    if (!editable) {
+      // A collaborator sees the address but can't change the owner's domain.
+      body.append(info.domain
+        ? el('div', { class: 'dom-current' }, el('div', {}, el('div', { class: 'label' }, 'Custom domain'), el('div', { class: 'dom-name' }, info.domain)))
+        : el('p', { class: 'set-lead t-mute sh dom-lead', style: 'margin:0' }, 'No custom domain — only the server’s owner can point one here.'));
+      return;
+    }
     if (!info.domain) {
       body.append(
         el('p', { class: 'set-lead t-mute sh dom-lead' }, `Bring a domain you already own — like ${'mc.yourname.com'} — and players join by that name instead of your ${'example.invalid'} address. You add two DNS records at your registrar; nothing changes here.`),
@@ -1737,7 +1762,7 @@ function renderDomain(summary: ServerSummary): HTMLElement {
 }
 
 // ---- settings pane: read-only facts + the danger zone
-function settingsPane(summary: ServerSummary): HTMLElement {
+function settingsPane(summary: ServerSummary, isOwner = true): HTMLElement {
   const info = el('div', { class: 'entry' },
     el('div', { class: 'card-head' }, el('span', { class: 'k' }, 'Server details'), el('span', { class: 'k t-mute' }, 'read-only')),
     el('div', { class: 'kv-grid' },
@@ -1747,8 +1772,22 @@ function settingsPane(summary: ServerSummary): HTMLElement {
       kv('Minecraft version', summary.version),
       kv('Plan', `${summary.plan} · ${summary.ramMB / 1024} GB RAM`),
       kv('Created', new Date(summary.createdAt).toLocaleString()),
+      kv('Your access', accessLabel(summary.access ?? 'owner')),
     ),
   );
+
+  // A collaborator sees the facts, not the billing/lobby/delete controls — those stay
+  // with the owner, and the backend refuses them regardless.
+  if (!isOwner) {
+    return el('div', { class: 'ov' }, info,
+      el('div', { class: 'entry pad' },
+        el('div', { class: 'k sh mb' }, 'Shared with you'),
+        el('p', { class: 'set-lead t-mute sh', style: 'margin:0' }, summary.access === 'viewer'
+          ? 'You have view-only access to this server. The owner can raise you to manager, which adds power, console commands, files and more.'
+          : 'You can run this server day to day — power, console, files, plugins, backups and schedules. Billing, the domain, deleting it and the team list stay with the owner.'),
+      ),
+    );
+  }
 
   const del = el('button', { class: 'btn btn-danger', onclick: async () => {
     if (!window.confirm(`Delete ${summary.name} and its world for good? This cannot be undone.`)) return;
@@ -1768,6 +1807,119 @@ function settingsPane(summary: ServerSummary): HTMLElement {
   );
 
   return el('div', { class: 'ov' }, info, lobbyStartCard(summary), danger);
+}
+
+// The plain-English name for an access level, used in the panel wherever a role shows.
+function accessLabel(a: Access): string {
+  return a === 'owner' ? 'Owner' : a === 'manager' ? 'Manager' : 'Viewer';
+}
+
+// ---- team: invite collaborators to help run one server -------------------------
+// Real, per-server access. The owner adds someone by their Endhost email and picks a
+// role; that person then sees this server in their own dashboard. Managers run it;
+// viewers watch. A collaborator sees the roster read-only and can leave.
+function renderTeam(summary: ServerSummary, isOwner: boolean): HTMLElement {
+  const list = el('div', { class: 'team-list' }, el('div', { class: 'loading blink', style: 'padding:12px 14px' }, 'Loading '));
+  let info: TeamInfo | null = null;
+
+  const roleName = (r: 'manager' | 'viewer') => r === 'manager' ? 'Manager' : 'Viewer';
+  const roleNote = (r: 'manager' | 'viewer') => r === 'manager'
+    ? 'Runs the server — power, console, files, plugins, backups, schedules.'
+    : 'Read-only — sees status, console output, files and metrics.';
+
+  function ownerRow(email: string): HTMLElement {
+    return el('div', { class: 'team-row' },
+      el('span', { class: 'team-av' }, (email[0] || '?').toUpperCase()),
+      el('div', { class: 'team-who' }, el('div', { class: 'team-email' }, email), el('div', { class: 'team-role t-mute sh' }, 'Owner · full control')),
+      el('span', { class: 'team-tag owner' }, 'Owner'),
+    );
+  }
+
+  function memberRow(m: TeamMember): HTMLElement {
+    const right = el('div', { class: 'team-actions' });
+    if (isOwner) {
+      const sel = el('select', { class: 'input team-role-sel', onchange: async (e: Event) => {
+        const v = (e.currentTarget as HTMLSelectElement).value as 'manager' | 'viewer';
+        try { await api.teamSetRole(summary.id, m.userId, v); m.role = v; toast(`${m.email} is now a ${roleName(v).toLowerCase()}.`); }
+        catch (err) { toast(fail(err), 'err'); (e.currentTarget as HTMLSelectElement).value = m.role; }
+      } },
+        el('option', { value: 'manager', ...(m.role === 'manager' ? { selected: 'selected' } : {}) }, 'Manager'),
+        el('option', { value: 'viewer', ...(m.role === 'viewer' ? { selected: 'selected' } : {}) }, 'Viewer'),
+      );
+      const rm = el('button', { class: 'btn btn-ghost btn-sm fm-del', title: 'Remove', onclick: async () => {
+        if (!window.confirm(`Remove ${m.email} from ${summary.name}?`)) return;
+        try { await api.teamRemove(summary.id, m.userId); toast(`${m.email} removed.`); await load(); }
+        catch (err) { toast(fail(err), 'err'); }
+      } }, 'Remove');
+      right.append(sel, rm);
+    } else {
+      right.append(el('span', { class: 'team-tag' }, roleName(m.role)));
+    }
+    return el('div', { class: 'team-row' },
+      el('span', { class: 'team-av' }, (m.email[0] || '?').toUpperCase()),
+      el('div', { class: 'team-who' }, el('div', { class: 'team-email' }, m.email), el('div', { class: 'team-role t-mute sh' }, roleNote(m.role))),
+      right,
+    );
+  }
+
+  function draw(): void {
+    if (!info) return;
+    clear(list);
+    list.append(ownerRow(info.owner.email));
+    if (info.members.length) info.members.forEach((m) => list.append(memberRow(m)));
+    else if (!isOwner) list.append(el('div', { class: 'team-empty t-mute sh' }, 'No other collaborators.'));
+    if (!isOwner) {
+      // A collaborator can step away from a shared server themselves.
+      list.append(el('div', { class: 'team-leave' },
+        el('button', { class: 'btn btn-ghost btn-sm fm-del', onclick: async () => {
+          if (!window.confirm(`Leave ${summary.name}? You'll lose access until the owner re-invites you.`)) return;
+          try { await api.teamRemove(summary.id, 'me'); } catch { /* fall through to reload below */ }
+          toast('You left this server.'); await loadServers();
+          go(state.servers.length ? serverHash(state.servers[0].id, 'overview') : '#/new');
+        } }, 'Leave this server')));
+    }
+  }
+
+  async function load(): Promise<void> {
+    try { info = await api.team(summary.id); draw(); }
+    catch (e) { clear(list); list.append(el('div', { class: 'fm-msg err' }, fail(e))); }
+  }
+  void load();
+
+  const cards: HTMLElement[] = [];
+  if (isOwner) {
+    const emailIn = el('input', { class: 'input', type: 'email', placeholder: 'their Endhost account email', autocomplete: 'off' }) as HTMLInputElement;
+    const roleIn = el('select', { class: 'input' },
+      el('option', { value: 'manager' }, 'Manager — can run the server'),
+      el('option', { value: 'viewer' }, 'Viewer — read-only'),
+    ) as HTMLSelectElement;
+    const msg = el('div', { class: 'fm-msg' });
+    const form = el('form', { class: 'team-form',
+      onsubmit: async (e: Event) => {
+        e.preventDefault();
+        const email = emailIn.value.trim();
+        if (!email) return;
+        msg.textContent = ''; msg.className = 'fm-msg';
+        const btn = form.querySelector('button[type=submit]') as HTMLButtonElement;
+        btn.classList.add('is-disabled');
+        try {
+          await api.teamAdd(summary.id, email, roleIn.value as 'manager' | 'viewer');
+          emailIn.value = ''; toast('Collaborator added.'); await load();
+        } catch (err) { msg.className = 'fm-msg err'; msg.textContent = fail(err); }
+        finally { btn.classList.remove('is-disabled'); }
+      },
+    },
+      el('div', { class: 'team-form-row' }, emailIn, roleIn, el('button', { class: 'btn btn-portal', type: 'submit' }, 'Add')),
+      el('p', { class: 't-mute sh', style: 'margin:6px 2px 0' }, 'They need an Endhost account already. Access is only to this one server, and you can change or remove it any time.'),
+      msg,
+    );
+    cards.push(el('div', { class: 'entry pad' }, el('div', { class: 'label mb' }, 'Invite someone'), form));
+  }
+  cards.push(el('div', { class: 'entry' },
+    el('div', { class: 'card-head' }, el('span', { class: 'k' }, 'People with access'), el('span', { class: 'k t-mute' }, isOwner ? 'you can change roles' : 'shared with you')),
+    list,
+  ));
+  return el('div', { class: 'ov' }, ...cards);
 }
 
 // Let players start this server from inside the lobby (its selector tile / `/start`). Off by
@@ -2318,43 +2470,198 @@ function comingSoonCard(title: string, desc: string): HTMLElement {
   );
 }
 
-function comingSoon(title: string, lead: string, items: Array<[string, string]>): HTMLElement {
-  return el('div', { class: 'soon-page' },
-    el('div', { class: 'soon-hero entry' },
-      el('span', { class: 'soon-badge big' }, 'Coming soon'),
-      el('h3', {}, title),
-      el('p', { class: 'set-lead t-mute sh' }, lead),
-    ),
-    el('div', { class: 'soon-grid' }, ...items.map(([t, d]) => comingSoonCard(t, d))),
-  );
+
+// A compact duration like "2d 4h" / "3h 12m" from milliseconds. For uptime badges.
+function shortDur(ms: number): string {
+  const s = Math.floor(ms / 1000), d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m`;
+  return `${s}s`;
 }
 
+// The real network leaderboard: online-now from live RCON, the 7-day peak from the
+// persisted metrics history, and uptime from the running container. Refreshes on a
+// timer; a gap is a real gap, never filler.
 function renderStats(): HTMLElement {
-  return el('div', { class: 'page' },
-    pageHead('Leaderboards', 'Network-wide stats and rankings — who’s online, the busiest servers, uptime records.'),
-    comingSoon('Network leaderboards are on the way',
-      'A live board of the whole network: the most-played servers, peak player counts, uptime streaks and playtime records — all pulled from real activity, never invented.',
-      [
-        ['Busiest servers', 'A ranking of servers by players online and total playtime this week.'],
-        ['Uptime streaks', 'How long each server has stayed awake without a crash or restart.'],
-        ['Peak concurrency', 'The highest number of players the network has held at once.'],
-        ['Your standing', 'Where your servers sit on the board, updated as people play.'],
-      ]),
-  );
+  const stats = el('div', { class: 'lb-stats' });
+  const board = el('div', { class: 'lb-board' }, el('div', { class: 'loading blink', style: 'padding:16px' }, 'Loading the board '));
+  const page = el('div', { class: 'page' },
+    pageHead('Leaderboards', 'The live network board — busiest right now, this week’s peaks, and uptime. Every number is measured, never invented.'),
+    stats, board);
+
+  const statCard = (v: string, k: string) => el('div', { class: 'entry lb-stat' }, el('div', { class: 'lb-stat-v' }, v), el('div', { class: 'lb-stat-k t-mute sh' }, k));
+  const medal = (r: number) => r === 1 ? '①' : r === 2 ? '②' : r === 3 ? '③' : String(r);
+
+  function lbRow(s: LeaderRow, rank: number): HTMLElement {
+    return el('div', { class: 'lb-row entry' + (s.mine ? ' mine' : '') + (rank <= 3 ? ' top' : '') },
+      el('span', { class: 'lb-rank' }, medal(rank)),
+      el('div', { class: 'lb-name' },
+        itemIcon(s.icon, 26),
+        el('div', { class: 'lb-name-txt' },
+          el('div', { class: 'lb-title' }, s.name, s.mine ? el('span', { class: 'lb-you' }, 'yours') : ''),
+          el('div', { class: 'lb-sub t-mute sh' }, `${s.softwareLabel} · ${s.version}`)),
+      ),
+      el('span', { class: 'lb-col' }, el('span', { class: 'dot ' + (s.running ? 'on' : 'off') }), el('span', { class: 'lb-col-v' }, ` ${s.online}`)),
+      el('span', { class: 'lb-col' }, el('span', { class: 'lb-col-v' }, String(s.peak7d))),
+      el('span', { class: 'lb-col t-mute' }, s.running && s.uptimeMs ? shortDur(s.uptimeMs) : '—'),
+    );
+  }
+
+  async function load(): Promise<void> {
+    let d: LeaderboardInfo;
+    try { d = await api.leaderboards(); } catch (e) { clear(board); board.append(el('div', { class: 'fm-msg err' }, fail(e))); return; }
+    clear(stats);
+    stats.append(
+      statCard(String(d.onlineNow), 'Players online now'),
+      statCard(`${d.awake}/${d.total}`, 'Servers awake'),
+      statCard(String(d.peakServer), 'Biggest 7-day peak'),
+    );
+    clear(board);
+    if (!d.servers.length) {
+      board.append(el('div', { class: 'entry pad lb-none t-mute sh' }, 'No listed servers on the network yet. As servers join and people play, the board fills in here — with real numbers.'));
+      return;
+    }
+    board.append(el('div', { class: 'lb-row lb-head' },
+      el('span', { class: 'lb-rank' }, '#'),
+      el('span', { class: 'lb-name' }, 'Server'),
+      el('span', { class: 'lb-col' }, 'Online'),
+      el('span', { class: 'lb-col' }, '7-day peak'),
+      el('span', { class: 'lb-col' }, 'Uptime')));
+    d.servers.forEach((s, i) => board.append(lbRow(s, i + 1)));
+  }
+
+  void load();
+  const t = window.setInterval(load, 8000);
+  onDispose(() => window.clearInterval(t));
+  return page;
 }
 
+const SUP_CATEGORIES: Record<string, string> = {
+  server: 'Server issue', billing: 'Billing & credits', network: 'Network / proxy', account: 'Account', other: 'Something else',
+};
+const supCatLabel = (c: string) => SUP_CATEGORIES[c] ?? c;
+function supStatusPill(status: 'open' | 'answered' | 'closed'): HTMLElement {
+  const map = { open: ['sup-st-open', 'Open'], answered: ['sup-st-answered', 'Answered'], closed: ['sup-st-closed', 'Closed'] } as const;
+  const [cls, label] = map[status];
+  return el('span', { class: 'sup-pill ' + cls }, label);
+}
+function supField(label: string, input: HTMLElement): HTMLElement {
+  return el('label', { class: 'sup-field' }, el('span', { class: 'sup-field-k label' }, label), input);
+}
+
+// The real support desk: an account opens a ticket, an operator replies, and both
+// sides read the same thread. The page swaps between the ticket list, the new-ticket
+// form and one thread — no bots, no canned answers, just a conversation.
 function renderSupport(): HTMLElement {
-  return el('div', { class: 'page' },
-    pageHead('Support', 'Get help with your servers — guides, and a way to reach a human.'),
-    comingSoon('A support desk is coming',
-      'Open a ticket, track its status, and get a real reply. Until it lands, the Docs & commands page covers the common questions, and an admin can help directly.',
-      [
-        ['Tickets', 'Open a support request and follow it from your dashboard.'],
-        ['Guided fixes', 'Step-by-step help for the usual snags — a server that won’t boot, a plugin clash.'],
-        ['Status page', 'A live view of whether the host and network are healthy right now.'],
-        ['Docs', 'In the meantime, the Docs & commands page answers the frequent ones.'],
-      ]),
-  );
+  const panel = el('div', { class: 'sup' }, el('div', { class: 'loading blink', style: 'padding:16px' }, 'Loading '));
+  const page = el('div', { class: 'page' },
+    pageHead('Support', 'Open a ticket and a real person replies — follow it right here. For quick answers, the Docs & commands page covers the common ones.'),
+    panel);
+  let cats = ['server', 'billing', 'network', 'account', 'other'];
+  let maxOpen = 12;
+
+  function bubble(m: TicketThread['messages'][number]): HTMLElement {
+    return el('div', { class: 'sup-msg ' + (m.staff ? 'staff' : 'user') },
+      el('div', { class: 'sup-msg-head' },
+        el('span', { class: 'sup-msg-who' }, m.staff ? 'Endhost team' : m.author),
+        el('span', { class: 'sup-msg-when t-mute sh' }, ago(m.at))),
+      el('div', { class: 'sup-msg-body' }, m.body));
+  }
+
+  function ticketCard(t: TicketSummary): HTMLElement {
+    return el('div', { class: 'entry sup-card' + (t.unread ? ' unread' : ''), onclick: () => void showThread(t.id) },
+      el('div', { class: 'sup-card-main' },
+        el('div', { class: 'sup-card-subj' }, t.unread ? el('span', { class: 'sup-dot' }) : false, t.subject),
+        el('div', { class: 'sup-card-meta t-mute sh' }, `${supCatLabel(t.category)} · ${t.count} message${t.count === 1 ? '' : 's'} · updated ${ago(t.updatedAt)}`)),
+      supStatusPill(t.status));
+  }
+
+  async function showList(): Promise<void> {
+    let d: TicketsInfo;
+    try { d = await api.tickets(); } catch (e) { clear(panel); panel.append(el('div', { class: 'fm-msg err' }, fail(e))); return; }
+    cats = d.categories; maxOpen = d.maxOpen;
+    clear(panel);
+    panel.append(el('div', { class: 'sup-head' },
+      el('div', { class: 'label' }, 'Your tickets'),
+      el('button', { class: 'btn btn-portal btn-sm', onclick: () => showNew() }, '＋ New ticket')));
+    if (!d.tickets.length) {
+      panel.append(el('div', { class: 'entry pad sup-empty t-mute sh' }, 'No tickets yet. Open one and an operator will reply — the whole conversation stays here.'));
+      return;
+    }
+    const listEl = el('div', { class: 'sup-list' });
+    d.tickets.forEach((t) => listEl.append(ticketCard(t)));
+    panel.append(listEl);
+  }
+
+  function showNew(): void {
+    clear(panel);
+    const subject = el('input', { class: 'input', placeholder: 'Short summary of the issue', maxlength: '120' }) as HTMLInputElement;
+    const cat = el('select', { class: 'input' }, ...cats.map((c) => el('option', { value: c }, supCatLabel(c)))) as HTMLSelectElement;
+    const msg = el('textarea', { class: 'input sup-textarea', rows: '6', placeholder: 'What’s happening? Include the server’s name and anything you’ve already tried.' }) as HTMLTextAreaElement;
+    const err = el('div', { class: 'fm-msg' });
+    const form = el('form', { class: 'entry pad sup-form',
+      onsubmit: async (e: Event) => {
+        e.preventDefault();
+        const s = subject.value.trim(), m = msg.value.trim();
+        if (s.length < 3) { err.className = 'fm-msg err'; err.textContent = 'Give the ticket a short subject.'; return; }
+        if (m.length < 5) { err.className = 'fm-msg err'; err.textContent = 'Describe what’s happening.'; return; }
+        const btn = form.querySelector('button[type=submit]') as HTMLButtonElement; btn.classList.add('is-disabled');
+        try { const r = await api.ticketOpen(s, cat.value, m); toast('Ticket opened.'); showThreadFrom(r.ticket); }
+        catch (e2) { err.className = 'fm-msg err'; err.textContent = fail(e2); btn.classList.remove('is-disabled'); }
+      } },
+      el('div', { class: 'label mb' }, 'New ticket'),
+      el('div', { class: 'sup-form-grid' }, supField('Subject', subject), supField('Topic', cat)),
+      supField('Message', msg),
+      err,
+      el('div', { class: 'sup-form-actions' },
+        el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => showList() }, 'Cancel'),
+        el('button', { class: 'btn btn-portal', type: 'submit' }, 'Open ticket')));
+    panel.append(
+      el('div', { class: 'sup-head' },
+        el('button', { class: 'btn btn-ghost btn-xs', onclick: () => showList() }, '‹ Back'),
+        el('span', { class: 't-mute sh' }, `Up to ${maxOpen} open at once`)),
+      form);
+    subject.focus();
+  }
+
+  async function showThread(tid: string): Promise<void> {
+    clear(panel); panel.append(el('div', { class: 'loading blink', style: 'padding:16px' }, 'Loading '));
+    let t: TicketThread;
+    try { t = await api.ticket(tid); } catch (e) { clear(panel); panel.append(el('div', { class: 'fm-msg err' }, fail(e))); return; }
+    showThreadFrom(t);
+    void loadServers(); // ticket read → the sidebar Support badge may have dropped
+  }
+
+  function showThreadFrom(t: TicketThread): void {
+    clear(panel);
+    const feed = el('div', { class: 'sup-feed' });
+    t.messages.forEach((m) => feed.append(bubble(m)));
+    const reply = el('textarea', { class: 'input sup-textarea', rows: '3', placeholder: t.status === 'closed' ? 'Reply to reopen this ticket…' : 'Write a reply…' }) as HTMLTextAreaElement;
+    const sendErr = el('div', { class: 'fm-msg' });
+    const send = el('button', { class: 'btn btn-portal btn-sm', onclick: async () => {
+      const body = reply.value.trim(); if (!body) return;
+      send.classList.add('is-disabled');
+      try { const r = await api.ticketReply(t.id, body); reply.value = ''; showThreadFrom(r.ticket); }
+      catch (e) { sendErr.className = 'fm-msg err'; sendErr.textContent = fail(e); send.classList.remove('is-disabled'); }
+    } }, 'Send reply');
+    const closeBtn = t.status === 'closed'
+      ? el('button', { class: 'btn btn-ghost btn-sm', onclick: async () => { try { showThreadFrom((await api.ticketStatus(t.id, 'open')).ticket); } catch (e) { toast(fail(e), 'err'); } } }, 'Reopen')
+      : el('button', { class: 'btn btn-ghost btn-sm', onclick: async () => { if (!window.confirm('Close this ticket? You can reopen it any time by replying.')) return; try { showThreadFrom((await api.ticketStatus(t.id, 'closed')).ticket); } catch (e) { toast(fail(e), 'err'); } } }, 'Close ticket');
+    panel.append(
+      el('div', { class: 'sup-thread-head' },
+        el('button', { class: 'btn btn-ghost btn-xs', onclick: () => showList() }, '‹ All tickets'),
+        supStatusPill(t.status)),
+      el('div', { class: 'sup-thread-title' },
+        el('h3', {}, t.subject),
+        el('div', { class: 'sup-thread-meta t-mute sh' }, `${supCatLabel(t.category)} · opened ${ago(t.createdAt)}`)),
+      feed,
+      el('div', { class: 'entry pad sup-reply' }, reply, sendErr, el('div', { class: 'sup-reply-actions' }, closeBtn, send)));
+    feed.scrollTop = feed.scrollHeight;
+  }
+
+  void showList();
+  return page;
 }
 
 // ------------------------------------------------------------------ account
@@ -2437,22 +2744,93 @@ function linkMcCard(): HTMLElement {
 }
 
 // ------------------------------------------------------------------- admin
-function renderAdmin(section: 'accounts' | 'servers' | 'ranks'): HTMLElement {
-  const anav = (id: string, glyph: string, label: string) =>
+function renderAdmin(section: 'accounts' | 'servers' | 'ranks' | 'tickets'): HTMLElement {
+  const anav = (id: string, glyph: string, label: string, badge = 0) =>
     el('a', { class: 'sv-nav-item' + (section === id ? ' active' : ''), href: `#/admin/${id}`, onclick: () => sound.click() },
-      el('span', { class: 'gl' }, glyph), el('span', { class: 'lbl' }, label));
+      el('span', { class: 'gl' }, glyph), el('span', { class: 'lbl' }, label),
+      badge > 0 ? el('span', { class: 'sv-nav-badge' }, badge > 9 ? '9+' : String(badge)) : false);
   const nav = el('div', { class: 'sv-nav' },
     anav('accounts', '☰', 'Accounts'),
     anav('servers', '▦', 'Servers'),
     anav('ranks', '✦', 'Ranks'),
+    anav('tickets', '✉', 'Support', me?.ticketQueue ?? 0),
   );
   const sub = section === 'servers'
     ? 'Every server on the host — stop or delete any of them.'
     : section === 'ranks'
       ? 'Ranks, prefixes and permissions — one list, synced to the lobby and the proxy.'
-      : 'Grant credits and raise server limits for any account.';
-  const body = section === 'servers' ? adminServersCard() : section === 'ranks' ? adminRanksCard() : adminAccountsCard();
+      : section === 'tickets'
+        ? 'The support queue — every account’s tickets. Reply, and close when it’s resolved.'
+        : 'Grant credits and raise server limits for any account.';
+  const body = section === 'servers' ? adminServersCard() : section === 'ranks' ? adminRanksCard() : section === 'tickets' ? adminTicketsCard() : adminAccountsCard();
   return el('div', { class: 'page' }, pageHead('Admin', sub), nav, body);
+}
+
+// The admin support queue: every account's tickets, opened into the same thread the
+// user sees, with a staff reply and close. Reuses the ticket helpers from Support.
+function adminTicketsCard(): HTMLElement {
+  const wrap = el('div', { class: 'sup' }, el('div', { class: 'loading blink', style: 'padding:16px' }, 'Loading the queue '));
+
+  function bubble(m: TicketThread['messages'][number]): HTMLElement {
+    return el('div', { class: 'sup-msg ' + (m.staff ? 'staff' : 'user') },
+      el('div', { class: 'sup-msg-head' },
+        el('span', { class: 'sup-msg-who' }, m.staff ? `${m.author} · team` : m.author),
+        el('span', { class: 'sup-msg-when t-mute sh' }, ago(m.at))),
+      el('div', { class: 'sup-msg-body' }, m.body));
+  }
+
+  async function showList(): Promise<void> {
+    let d: { tickets: TicketSummary[] };
+    try { d = await api.adminTickets(); } catch (e) { clear(wrap); wrap.append(el('div', { class: 'fm-msg err' }, fail(e))); return; }
+    clear(wrap);
+    if (!d.tickets.length) { wrap.append(el('div', { class: 'entry pad sup-empty t-mute sh' }, 'No tickets in the queue. When an account opens one, it appears here.')); return; }
+    const listEl = el('div', { class: 'sup-list' });
+    d.tickets.forEach((t) => listEl.append(
+      el('div', { class: 'entry sup-card' + (t.unread ? ' unread' : ''), onclick: () => void showThread(t.id) },
+        el('div', { class: 'sup-card-main' },
+          el('div', { class: 'sup-card-subj' }, t.unread ? el('span', { class: 'sup-dot' }) : false, t.subject),
+          el('div', { class: 'sup-card-meta t-mute sh' }, `${t.email} · ${supCatLabel(t.category)} · updated ${ago(t.updatedAt)}`)),
+        supStatusPill(t.status))));
+    wrap.append(listEl);
+  }
+
+  async function showThread(tid: string): Promise<void> {
+    clear(wrap); wrap.append(el('div', { class: 'loading blink', style: 'padding:16px' }, 'Loading '));
+    let t: TicketThread;
+    try { t = await api.ticket(tid); } catch (e) { clear(wrap); wrap.append(el('div', { class: 'fm-msg err' }, fail(e))); return; }
+    draw(t);
+    void refreshMe().then(updateNavBadges); // reading clears part of the queue badge
+  }
+
+  function draw(t: TicketThread): void {
+    clear(wrap);
+    const feed = el('div', { class: 'sup-feed' });
+    t.messages.forEach((m) => feed.append(bubble(m)));
+    const reply = el('textarea', { class: 'input sup-textarea', rows: '3', placeholder: 'Reply as the Endhost team…' }) as HTMLTextAreaElement;
+    const err = el('div', { class: 'fm-msg' });
+    const send = el('button', { class: 'btn btn-portal btn-sm', onclick: async () => {
+      const body = reply.value.trim(); if (!body) return;
+      send.classList.add('is-disabled');
+      try { draw((await api.ticketReply(t.id, body)).ticket); }
+      catch (e) { err.className = 'fm-msg err'; err.textContent = fail(e); send.classList.remove('is-disabled'); }
+    } }, 'Send reply');
+    const closeBtn = t.status === 'closed'
+      ? el('button', { class: 'btn btn-ghost btn-sm', onclick: async () => { try { draw((await api.ticketStatus(t.id, 'open')).ticket); } catch (e) { toast(fail(e), 'err'); } } }, 'Reopen')
+      : el('button', { class: 'btn btn-ghost btn-sm', onclick: async () => { try { draw((await api.ticketStatus(t.id, 'closed')).ticket); } catch (e) { toast(fail(e), 'err'); } } }, 'Mark resolved');
+    wrap.append(
+      el('div', { class: 'sup-thread-head' },
+        el('button', { class: 'btn btn-ghost btn-xs', onclick: () => void showList() }, '‹ Queue'),
+        supStatusPill(t.status)),
+      el('div', { class: 'sup-thread-title' },
+        el('h3', {}, t.subject),
+        el('div', { class: 'sup-thread-meta t-mute sh' }, `${t.email} · ${supCatLabel(t.category)} · opened ${ago(t.createdAt)}`)),
+      feed,
+      el('div', { class: 'entry pad sup-reply' }, reply, err, el('div', { class: 'sup-reply-actions' }, closeBtn, send)));
+    feed.scrollTop = feed.scrollHeight;
+  }
+
+  void showList();
+  return el('div', { class: 'ov' }, wrap);
 }
 
 function adminAccountsCard(): HTMLElement {

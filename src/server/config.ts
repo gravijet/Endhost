@@ -61,6 +61,8 @@ export const LIMITS = {
   maxTotalServers: 8,
   defaultServersPerUser: 1,
   maxServerLimit: 25, // the highest an admin may set a single account to
+  maxTeamPerServer: 8, // collaborators one server may share access with
+  maxOpenTickets: 12,  // open support tickets one account may have at once
   portRange: { from: 25800, to: 25899 },
 };
 

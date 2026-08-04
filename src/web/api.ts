@@ -8,12 +8,17 @@ export interface PremiumIcon { id: string; price: number; label: string; }
 export interface Meta { versions: string[]; defaultVersion: string; defaultSoftware: string; software: SoftwareOpt[]; plan: Plan; joinHost: string; itemIcons: string[]; premiumIcons: PremiumIcon[]; }
 export interface Capacity { running: number; maxConcurrent: number; total: number; maxTotal: number; accepting: boolean; }
 
+// What the caller may do on a server: owner (full), manager (runs it, no billing/
+// delete/domain/team), viewer (read-only). Absent on records that predate teams.
+export type Access = 'owner' | 'manager' | 'viewer';
+
 export interface ServerSummary {
   id: string; name: string; version: string; software: string; softwareLabel: string; kind: string;
   address: string; port: number;
   motd: string; createdAt: number; plan: string; ramMB: number; maxPlayers: number;
   alwaysOn: boolean; subdomain: string | null; customDomain: string | null;
   icon: string; listed: boolean; lobbyStartable: boolean;
+  access?: Access;
 }
 
 // ---- network / server selector ----
@@ -56,7 +61,21 @@ export interface MaintenanceInfo {
   runningServers: number;
 }
 
-export interface Me { email: string; credits: number; admin: boolean; serverLimit: number; serverCount: number; mcName: string | null; mcLinked: boolean; unlockedIcons: string[]; }
+export interface Me { email: string; credits: number; admin: boolean; serverLimit: number; serverCount: number; sharedCount: number; mcName: string | null; mcLinked: boolean; unlockedIcons: string[]; supportUnread: number; ticketQueue: number; }
+
+// ---- team (per-server collaborators) ----
+export interface TeamMember { userId: string; email: string; role: 'manager' | 'viewer'; addedAt: number; }
+export interface TeamInfo { owner: { email: string }; members: TeamMember[]; you: Access; canManage: boolean; maxMembers: number; }
+
+// ---- support tickets ----
+export interface TicketSummary { id: string; subject: string; category: string; status: 'open' | 'answered' | 'closed'; createdAt: number; updatedAt: number; count: number; unread: boolean; lastFromStaff: boolean; email: string; }
+export interface TicketMessageView { id: string; at: number; staff: boolean; author: string; body: string; }
+export interface TicketThread { id: string; subject: string; category: string; status: 'open' | 'answered' | 'closed'; createdAt: number; updatedAt: number; side: 'user' | 'staff'; email: string; messages: TicketMessageView[]; }
+export interface TicketsInfo { tickets: TicketSummary[]; categories: string[]; maxOpen: number; }
+
+// ---- leaderboards (real network board) ----
+export interface LeaderRow { id: string; name: string; icon: string; software: string; softwareLabel: string; version: string; running: boolean; online: number; peak7d: number; uptimeMs: number; mine: boolean; }
+export interface LeaderboardInfo { onlineNow: number; awake: number; peakServer: number; total: number; at: number; servers: LeaderRow[]; }
 export interface Tx { id: string; userId: string; delta: number; reason: string; at: number; balanceAfter: number; }
 export interface CreditsInfo { balance: number; alwaysOnPerHour: number; ledger: Tx[]; }
 export interface AdminUser { id: string; email: string; credits: number; admin: boolean; createdAt: number; servers: number; serverLimit: number; }
@@ -247,6 +266,23 @@ export const api = {
   proxyFileDelete: (path: string) => req<{ ok: true }>('POST', '/api/network/files/delete', { path }),
   proxyFileUpload: (path: string, data: Blob) => reqRaw<{ ok: true; size: number }>('PUT', `/api/network/files/upload?path=${q(path)}`, data, 'application/octet-stream'),
   proxyFileDownloadUrl: (path: string) => `/api/network/files/download?path=${q(path)}`,
+
+  // ---- team (per-server collaborators) ----
+  team: (id: string) => req<TeamInfo>('GET', `/api/servers/${id}/team`),
+  teamAdd: (id: string, email: string, role: 'manager' | 'viewer') => req<{ ok: true; member: TeamMember }>('POST', `/api/servers/${id}/team`, { email, role }),
+  teamSetRole: (id: string, uid: string, role: 'manager' | 'viewer') => req<{ ok: true; role: string }>('POST', `/api/servers/${id}/team/${uid}/role`, { role }),
+  teamRemove: (id: string, uid: string) => req<{ ok: true }>('DELETE', `/api/servers/${id}/team/${uid}`),
+
+  // ---- support tickets ----
+  tickets: () => req<TicketsInfo>('GET', '/api/support/tickets'),
+  ticketOpen: (subject: string, category: string, message: string) => req<{ ok: true; ticket: TicketThread }>('POST', '/api/support/tickets', { subject, category, message }),
+  ticket: (tid: string) => req<TicketThread>('GET', `/api/support/tickets/${tid}`),
+  ticketReply: (tid: string, message: string) => req<{ ok: true; ticket: TicketThread }>('POST', `/api/support/tickets/${tid}/reply`, { message }),
+  ticketStatus: (tid: string, status: 'open' | 'closed') => req<{ ok: true; ticket: TicketThread }>('POST', `/api/support/tickets/${tid}/status`, { status }),
+  adminTickets: () => req<{ tickets: TicketSummary[] }>('GET', '/api/admin/tickets'),
+
+  // ---- leaderboards ----
+  leaderboards: () => req<LeaderboardInfo>('GET', '/api/leaderboards'),
 
   // ---- credits / admin ----
   credits: () => req<CreditsInfo>('GET', '/api/credits'),
