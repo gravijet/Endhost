@@ -2,7 +2,7 @@
   "name": "endhost",
   "version": "0.1.0",
   "private": true,
-  "description": "Endhost — Minecraft server hosting, built in Minecraft's own GUI grammar. Real panel, no placeholders.",
+  "description": "Minecraft server control panel with Docker-based provisioning.",
   "type": "module",
   "engines": {
     "node": ">=20"
